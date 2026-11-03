@@ -14,11 +14,14 @@ _PAGE_PATTERNS = [
 
 
 def parse_printed_page(text: str) -> str | None:
-    """从页眉/页脚候选文本识别印刷页码；识别不到返回 None。"""
-    for pat in _PAGE_PATTERNS:
-        m = pat.search(text)
-        if m:
-            return m.group(1)
+    """逐行识别印刷页码（页码常是页尾独立行如 1-1-5，多行拼接会让 ^$ 锚失效）。"""
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    candidates = lines[-3:] + lines[:2]  # 页尾优先，其次页首
+    for line in reversed(candidates):
+        for pat in _PAGE_PATTERNS:
+            m = pat.search(line)
+            if m:
+                return m.group(1)
     return None
 
 
@@ -80,7 +83,7 @@ def merge_cross_page_tables(raw_tables: list[dict]) -> list[dict]:
     """相邻页 + 表头相似（或页末/页首相接且同列数的无头续表）→ 并入前表。"""
     flat = []
     for p in raw_tables:
-        tables = [_clean_rows(t) for t in p["tables"] if t]
+        tables = [c for c in (_clean_rows(t) for t in p["tables"] if t) if c]
         for i, rows in enumerate(tables):
             flat.append({"pdf_page": p["pdf_page"], "rows": rows,
                          "first_on_page": i == 0, "last_on_page": i == len(tables) - 1})
@@ -137,6 +140,139 @@ def build_chunks(pages: list[dict], doc_id: str) -> list[dict]:
             if t:
                 chunks.append({"pdf_page": p["pdf_page"], "text": "[表格]\n" + table_to_text(t)})
     return chunks
+
+
+# ---------- 建库 ----------
+import json
+import sqlite3
+
+DB_PATH = str(Path(__file__).parent / "data" / "knowledge.db")
+
+
+def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS docs(
+      doc_id TEXT PRIMARY KEY, company_name TEXT, stock_code TEXT,
+      doc_type TEXT, page_count INTEGER);
+    CREATE TABLE IF NOT EXISTS pages(
+      doc_id TEXT, pdf_page INTEGER, printed_page TEXT, text TEXT,
+      PRIMARY KEY(doc_id, pdf_page));
+    CREATE TABLE IF NOT EXISTS blocks(
+      doc_id TEXT, pdf_page INTEGER, block_id INTEGER, type TEXT,
+      text TEXT, table_json TEXT);
+    CREATE TABLE IF NOT EXISTS chunks(
+      chunk_id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id TEXT, pdf_page INTEGER,
+      text TEXT, emb BLOB);
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='trigram');
+    CREATE TABLE IF NOT EXISTS company_registry(
+      alias TEXT, doc_id TEXT, stock_code TEXT, PRIMARY KEY(alias, doc_id));
+    CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
+    """)
+
+
+def doc_exists(conn: sqlite3.Connection, doc_id: str) -> bool:
+    return conn.execute("SELECT 1 FROM docs WHERE doc_id=?", (doc_id,)).fetchone() is not None
+
+
+def upsert_doc(conn, doc_id, company_name, stock_code, doc_type, page_count):
+    conn.execute("INSERT OR REPLACE INTO docs VALUES (?,?,?,?,?)",
+                 (doc_id, company_name, stock_code, doc_type, page_count))
+
+
+# ---------- 单文档入库 ----------
+def ingest_pdf(conn: sqlite3.Connection, pdf_path: str, do_embed: bool = True) -> str:
+    """幂等：完整入库（docs+chunks 齐全）才跳过；残缺/崩溃残留先清理重灌。
+    全程单事务、成功才 commit，保证 docs 行不会先于数据落库。"""
+    doc_id = Path(pdf_path).stem
+    row = conn.execute(
+        "SELECT (SELECT COUNT(*) FROM chunks WHERE chunks.doc_id=docs.doc_id)"
+        " FROM docs WHERE doc_id=?", (doc_id,)).fetchone()
+    if row and row[0] > 0:
+        print(f"[skip] {doc_id} 已入库")
+        return doc_id
+    # 清残缺（含上次崩溃回滚残留）
+    conn.execute("DELETE FROM chunks_fts WHERE rowid IN"
+                 " (SELECT chunk_id FROM chunks WHERE doc_id=?)", (doc_id,))
+    for tbl in ("chunks", "blocks", "pages", "docs", "company_registry"):
+        conn.execute(f"DELETE FROM {tbl} WHERE doc_id=?", (doc_id,))
+    parsed = parse_pdf(pdf_path)
+    upsert_doc(conn, doc_id, parsed["company_name"], parsed["stock_code"],
+               parsed["doc_type"], len(parsed["pages"]))
+    for p in parsed["pages"]:
+        conn.execute("INSERT OR REPLACE INTO pages VALUES (?,?,?,?)",
+                     (doc_id, p["pdf_page"], p["printed_page"], p["text"]))
+    # 表格：跨页合并 → blocks(结构化JSON) + 整表chunk（起始页做溯源页）
+    merged_tables = merge_cross_page_tables(parsed["pages"])
+    for bi, mt in enumerate(merged_tables):
+        conn.execute("INSERT INTO blocks VALUES (?,?,?,?,?,?)",
+                     (doc_id, mt["pdf_page"], bi, "table",
+                      table_to_text(mt["rows"]), json.dumps(mt["rows"], ensure_ascii=False)))
+    # 文本 chunk：pages 去掉 tables（build_chunks 只切文本）
+    text_pages = [{k: v for k, v in p.items() if k != "tables"} for p in parsed["pages"]]
+    chunks = build_chunks(text_pages, doc_id)
+    for mt in merged_tables:
+        chunks.append({"pdf_page": mt["pdf_page"], "text": "[表格]\n" + table_to_text(mt["rows"])})
+    for c in chunks:
+        cur = conn.execute("INSERT INTO chunks(doc_id, pdf_page, text) VALUES (?,?,?)",
+                           (doc_id, c["pdf_page"], c["text"]))
+        conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES (?,?)",
+                     (cur.lastrowid, c["text"]))
+    # 实体链接注册：全称 + 去后缀简称
+    aliases = {parsed["company_name"]} if parsed["company_name"] else set()
+    for suf in ("股份有限公司", "有限责任公司", "有限公司"):
+        if parsed["company_name"].endswith(suf):
+            aliases.add(parsed["company_name"][: -len(suf)])
+    for a in aliases:
+        if a:
+            conn.execute("INSERT OR REPLACE INTO company_registry VALUES (?,?,?)",
+                         (a, doc_id, parsed["stock_code"]))
+    conn.commit()
+    print(f"[ok] {doc_id} 公司={parsed['company_name']} 代码={parsed['stock_code']} "
+          f"页数={len(parsed['pages'])} 表格={len(merged_tables)} chunks={len(chunks)}")
+    if do_embed:
+        _embed_doc_chunks(conn, doc_id)
+    return doc_id
+
+
+def _embed_doc_chunks(conn: sqlite3.Connection, doc_id: str) -> None:
+    import llm
+    import numpy as np
+    rows = conn.execute(
+        "SELECT chunk_id, text FROM chunks WHERE doc_id=? AND emb IS NULL", (doc_id,)).fetchall()
+    if not rows:
+        return
+    vecs = llm.embed([r[1] for r in rows])
+    for (cid, _), v in zip(rows, vecs):
+        conn.execute("UPDATE chunks SET emb=? WHERE chunk_id=?",
+                     (np.asarray(v, dtype=np.float32).tobytes(), cid))
+    conn.commit()
+
+
+# ---------- CLI ----------
+if __name__ == "__main__":
+    import argparse
+    import glob as glob_mod
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pdf_dir", default="data/pdf")
+    ap.add_argument("--no-embed", action="store_true")
+    args = ap.parse_args()
+    Path("data").mkdir(exist_ok=True)
+    conn = get_conn()
+    init_db(conn)
+    # 注意：数据集扩展名是大写 .PDF；Windows glob 大小写不敏感，双 pattern 兜底
+    pdfs = sorted(set(glob_mod.glob(str(Path(args.pdf_dir) / "*.pdf")))
+                  | set(glob_mod.glob(str(Path(args.pdf_dir) / "*.PDF"))))
+    print(f"[info] 共 {len(pdfs)} 份 PDF")
+    for i, p in enumerate(pdfs, 1):
+        print(f"[{i}/{len(pdfs)}] {Path(p).name}")
+        ingest_pdf(conn, p, do_embed=not args.no_embed)
 
 
 # ---------- 封面元数据（实体链接数据源） ----------
