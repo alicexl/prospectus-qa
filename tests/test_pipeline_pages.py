@@ -1,7 +1,7 @@
 """P0#1 专项：文档ID + PDF物理页码 + 印刷页码（含 1-1-xx 格式）三层溯源链落库检查。
 真实 PDF 集成测试——数据集未下载时自动跳过。"""
 import re
-import sqlite3
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -19,8 +19,9 @@ def test_docid_pdfpage_printedpage_chain():
     from ingest import _write_doc, get_conn, init_db, parse_pdf
 
     pdf = sorted(set(glob.glob(str(PDF_DIR / "*.PDF"))) | set(glob.glob(str(PDF_DIR / "*.pdf"))))[0]
-    with tempfile.TemporaryDirectory() as td:
-        conn = get_conn(str(Path(td) / "t.db"))
+    td = tempfile.mkdtemp()
+    conn = get_conn(str(Path(td) / "t.db"))
+    try:
         init_db(conn)
         parsed = parse_pdf(pdf)
         _write_doc(conn, parsed)
@@ -41,8 +42,10 @@ def test_docid_pdfpage_printedpage_chain():
         for _, p in rows:
             if p is not None:
                 assert isinstance(p, str) and re.fullmatch(r"[\d\-]+", p)
-        # ④ 印刷页码随物理页单调递增（数值语义正确，非乱抓）
+        # ④ 印刷页码随物理页码单调递增（数值语义正确，非乱抓）
         nums = [int(p.replace("-", "")) if p else None for _, p in rows]
         seq = [x for x in nums if x is not None]
         assert seq == sorted(seq)
-        conn.close()  # Windows: 必须先关连接释放 WAL，TemporaryDirectory 才能清理
+    finally:
+        conn.close()
+        shutil.rmtree(td, ignore_errors=True)  # Windows 句柄延迟释放时 best-effort 清理

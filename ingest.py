@@ -59,6 +59,7 @@ def parse_pdf(pdf_path: str) -> dict:
             printed = parse_printed_page(head) or parse_printed_page(tail)
             pages.append({"pdf_page": i, "printed_page": printed,
                           "text": text, "tables": [t.extract() for t in tables]})
+    _repair_printed_pages(pages)
     meta = extract_company_meta(pages)
     return {"doc_id": doc_id, "pages": pages,
             "company_name": meta[0], "stock_code": meta[1], "doc_type": meta[2]}
@@ -140,6 +141,31 @@ def build_chunks(pages: list[dict], doc_id: str) -> list[dict]:
             if t:
                 chunks.append({"pdf_page": p["pdf_page"], "text": "[表格]\n" + table_to_text(t)})
     return chunks
+
+
+def _repair_printed_pages(pages: list[dict]) -> None:
+    """全文档一致性修复：印刷页码主流格式族外的孤值（如封底孤行"3"）、
+    同前缀组内非单调值 → 判为噪声置 None。支持 1-1-xx/1-2-xx 分节重编。"""
+    from collections import Counter
+
+    vals = [(p["pdf_page"], p["printed_page"]) for p in pages if p["printed_page"]]
+    if len(vals) < 10:
+        return
+    family = lambda v: v.split("-")[0] if "-" in v else ""  # noqa: E731
+    main_family, _ = Counter(family(v) for _, v in vals).most_common(1)[0]
+    last_by_prefix: dict[str, int] = {}
+    keep: dict[int, str] = {}
+    for pg, v in vals:
+        prefix = v.rsplit("-", 1)[0] if "-" in v else ""
+        n = int(v.rsplit("-", 1)[-1])
+        if main_family and family(v) != main_family:
+            continue  # 异族孤值（正文页脚数字/封底编号）→ 置 None
+        if prefix in last_by_prefix and n < last_by_prefix[prefix] - 1:
+            continue  # 同组回退 → 置 None
+        last_by_prefix[prefix] = n
+        keep[pg] = v
+    for p in pages:
+        p["printed_page"] = keep.get(p["pdf_page"])
 
 
 # ---------- 封面元数据（实体链接数据源） ----------
