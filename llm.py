@@ -1,11 +1,26 @@
-"""DeepSeek 生成 + 智谱 embedding-3，均走 openai 兼容 SDK。key 只从环境变量取。"""
+"""DeepSeek 生成 + 智谱 embedding-3，均走 openai 兼容 SDK。key 从环境变量取，
+缺省回落到仓库根 .env（已 gitignore）。"""
 import os
 import time
+from pathlib import Path
 
 from openai import OpenAI
 
 DEEPSEEK_BASE = "https://api.deepseek.com"
 ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4/"
+
+
+def _load_dotenv() -> None:
+    p = Path(__file__).parent / ".env"
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_dotenv()
 
 
 def _deepseek() -> OpenAI:
