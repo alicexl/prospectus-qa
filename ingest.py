@@ -142,6 +142,25 @@ def build_chunks(pages: list[dict], doc_id: str) -> list[dict]:
     return chunks
 
 
+# ---------- 封面元数据（实体链接数据源） ----------
+_RE_COMPANY = re.compile(r"([一-龥（）()]{4,30}(?:股份有限公司|有限责任公司|有限公司))")
+_RE_CODE = re.compile(r"(?:股票代码|证券代码)[：:\s]*[（(]?(\d{6})[)）]?")
+_RE_SHORT = re.compile(r"(?:公司简称|公司名称)[：:\s]*([一-龥A-Za-z0-9]{2,20})")
+
+
+def extract_company_meta(pages: list[dict]) -> tuple[str, str, str]:
+    """从前 8 页文本抽公司全称/股票代码；doc_type 由关键词判定。"""
+    head_text = "\n".join(p["text"] for p in pages[:8])
+    m = _RE_COMPANY.search(head_text)
+    company = m.group(1) if m else ""
+    c = _RE_CODE.search(head_text)
+    code = c.group(1) if c else ""
+    s = _RE_SHORT.search(head_text)
+    short = s.group(1) if s else ""
+    doc_type = "增发" if re.search(r"增发|非公开发行", head_text[:2000]) else "IPO"
+    return company, code, doc_type
+
+
 # ---------- 建库 ----------
 import json
 import sqlite3
@@ -275,20 +294,3 @@ if __name__ == "__main__":
         ingest_pdf(conn, p, do_embed=not args.no_embed)
 
 
-# ---------- 封面元数据（实体链接数据源） ----------
-_RE_COMPANY = re.compile(r"([一-龥（）()]{4,30}(?:股份有限公司|有限责任公司|有限公司))")
-_RE_CODE = re.compile(r"(?:股票代码|证券代码)[：:\s]*[（(]?(\d{6})[)）]?")
-_RE_SHORT = re.compile(r"(?:公司简称|公司名称)[：:\s]*([一-龥A-Za-z0-9]{2,20})")
-
-
-def extract_company_meta(pages: list[dict]) -> tuple[str, str, str]:
-    """从前 8 页文本抽公司全称/股票代码；doc_type 由关键词判定。"""
-    head_text = "\n".join(p["text"] for p in pages[:8])
-    m = _RE_COMPANY.search(head_text)
-    company = m.group(1) if m else ""
-    c = _RE_CODE.search(head_text)
-    code = c.group(1) if c else ""
-    s = _RE_SHORT.search(head_text)
-    short = s.group(1) if s else ""
-    doc_type = "增发" if re.search(r"增发|非公开发行", head_text[:2000]) else "IPO"
-    return company, code, doc_type
