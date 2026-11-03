@@ -1,4 +1,5 @@
 """问答管线 CLI：python -X utf8 run.py --input questions.jsonl --output answers.jsonl"""
+import json
 import re
 import sqlite3
 import time
@@ -6,6 +7,7 @@ import time
 import numpy as np
 
 import llm
+import schema
 from ingest import get_conn, init_db
 
 # ---------- RRF 融合 ----------
@@ -92,3 +94,115 @@ def search(conn: sqlite3.Connection, query: str, doc_id: str | None = None, k: i
     top = sorted(scores.items(), key=lambda kv: -kv[1])[:k]
     return [{"chunk_id": cid, "doc_id": by_id[cid][1], "pdf_page": by_id[cid][2],
              "text": by_id[cid][3], "rrf_score": s} for cid, s in top if cid in by_id]
+
+
+# ---------- quote 程序化逐字校验 ----------
+_FULL2HALF = str.maketrans("０１２３４５６７８９（）　：，。", "0123456789() :，.")
+
+
+def norm_text(s: str) -> str:
+    """规范化：全角→半角、去全部空白。quote 逐字匹配在此空间进行。"""
+    return re.sub(r"\s+", "", s.translate(_FULL2HALF))
+
+
+def verify_quote(conn: sqlite3.Connection, cite: dict) -> bool:
+    """quote 必须能在 doc_id+pdf_page 对应页文本上逐字（规范化后）找到。"""
+    row = conn.execute("SELECT text FROM pages WHERE doc_id=? AND pdf_page=?",
+                       (cite["doc_id"], cite["pdf_page"])).fetchone()
+    return bool(row) and norm_text(cite["quote"]) in norm_text(row[0])
+
+
+# ---------- doc 路生成 ----------
+_DOC_SYSTEM = """你是招股书问答助手。仅依据给出的资料片段回答，答案与引用必须逐字来自原文。
+输出 JSON（不要其他文字）：{"answer": str, "answer_type": "number|text|list|refusal", "value": {"number": float|null, "unit": "元|万元|亿元|%|股|null"}, "items": [str], "citations": [{"pdf_page": int, "quote": str}], "confidence": 0到1}
+规则：
+- 数值只抄原文数字，禁止心算或换算；
+- 信息在片段中不存在时 answer_type=refusal，并在 answer 说明（如"招股意向书阶段尚未确定发行价格"）；
+- 引用 quote 必须是原文连续片段（≤80字），pdf_page 取片段所属页码；
+- 若指标存在合并报表/母公司报表等不同口径或不同报告类型，须分别给出各口径数值并注明差异，每种口径各给一条引用。"""
+
+
+def answer_doc(conn, question_id: str, question: str, doc_id: str) -> schema.AnswerRecord:
+    chunks = search(conn, question, doc_id=doc_id, k=8)
+    usage = {"input": 0, "output": 0}
+    data: dict = {}
+    if chunks:
+        ctx = "\n\n".join(f"[片段 pdf_page={c['pdf_page']}]\n{c['text']}" for c in chunks)
+        content, usage = llm.chat(_DOC_SYSTEM, f"问题：{question}\n\n资料：\n{ctx}")
+        m = re.search(r"\{.*\}", content, re.S)
+        data = json.loads(m.group(0)) if m else {}
+    # 拒答判定③：检索置信不足
+    top_score = chunks[0]["rrf_score"] if chunks else 0.0
+    at = data.get("answer_type", "refusal")
+    if not chunks or (top_score < 0.016 and at != "refusal"):
+        at, data["answer"] = "refusal", "知识库中未检索到与问题充分相关的披露内容"
+    # 引用逐字校验：校验不过的引用直接丢弃
+    cites = []
+    for ct in data.get("citations", []):
+        cand = {"doc_id": doc_id, "pdf_page": int(ct.get("pdf_page", 0) or 0),
+                "quote": str(ct.get("quote", ""))}
+        if cand["pdf_page"] > 0 and cand["quote"] and verify_quote(conn, cand):
+            pr = conn.execute("SELECT printed_page FROM pages WHERE doc_id=? AND pdf_page=?",
+                              (doc_id, cand["pdf_page"])).fetchone()
+            cites.append({**cand, "printed_page": pr[0] if pr else None})
+    rec = schema.AnswerRecord(
+        question_id=question_id,
+        answer=str(data.get("answer", "")), answer_type=at,
+        value=schema.Value(**(data.get("value") or {})),
+        items=[str(i) for i in (data.get("items") or [])],
+        citations=[schema.Citation(**c) for c in cites],
+        route="doc", confidence=float(data.get("confidence", 0.5)), tokens=usage)
+    # 有答案但引用全被校验毙掉 → 降级拒答（题目硬要求：每个答案都要有可逐字回溯的引用）
+    if at != "refusal" and not cites:
+        rec.answer_type, rec.answer, rec.confidence = "refusal", "引用无法在原文逐字验证", 0.0
+    return rec
+
+
+# ---------- 拒答辅助 ----------
+def refuse(question_id: str, reason: str, route_v: str = "none") -> schema.AnswerRecord:
+    return schema.AnswerRecord(question_id=question_id, answer=reason,
+                               answer_type="refusal", route=route_v, confidence=0.0)
+
+
+# ---------- 单题编排 ----------
+def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
+    t0 = time.time()
+    try:
+        doc_id = link_company(conn, question)
+        if doc_id is None:
+            rec = refuse(qid, "知识库中不存在该公司（80份招股书未覆盖）", "none")
+        else:
+            r = route(conn, question, doc_id)
+            if r == "doc":
+                rec = answer_doc(conn, qid, question, doc_id)
+            else:  # sql/hybrid 由 Task7 接入，规则命中先按文档路兜底
+                rec = answer_doc(conn, qid, question, doc_id)
+    except Exception as e:  # noqa: BLE001 单题失败不中断整批
+        rec = refuse(qid, f"处理失败：{e}")
+    rec.latency_ms = int((time.time() - t0) * 1000)
+    return rec
+
+
+def main():
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", required=True)
+    ap.add_argument("--output", required=True)
+    args = ap.parse_args()
+    conn = get_conn()
+    init_db(conn)
+    with open(args.input, encoding="utf-8") as f, open(args.output, "w", encoding="utf-8") as out:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            rec = answer_one(conn, item["question_id"], item["question"])
+            out.write(rec.model_dump_json() + "\n")
+            out.flush()
+            print(f"[done] {item['question_id']} -> {rec.answer_type}")
+
+
+if __name__ == "__main__":
+    main()

@@ -205,22 +205,20 @@ def upsert_doc(conn, doc_id, company_name, stock_code, doc_type, page_count):
 
 
 # ---------- 单文档入库 ----------
-def ingest_pdf(conn: sqlite3.Connection, pdf_path: str, do_embed: bool = True) -> str:
-    """幂等：完整入库（docs+chunks 齐全）才跳过；残缺/崩溃残留先清理重灌。
-    全程单事务、成功才 commit，保证 docs 行不会先于数据落库。"""
-    doc_id = Path(pdf_path).stem
+def _write_doc(conn: sqlite3.Connection, parsed: dict) -> str:
+    """写入单份解析结果。幂等：完整入库（docs+chunks 齐全）才跳过；残缺先清理重灌。
+    单事务、成功才 commit，docs 行不会先于数据落库。"""
+    doc_id = parsed["doc_id"]
     row = conn.execute(
         "SELECT (SELECT COUNT(*) FROM chunks WHERE chunks.doc_id=docs.doc_id)"
         " FROM docs WHERE doc_id=?", (doc_id,)).fetchone()
     if row and row[0] > 0:
         print(f"[skip] {doc_id} 已入库")
         return doc_id
-    # 清残缺（含上次崩溃回滚残留）
     conn.execute("DELETE FROM chunks_fts WHERE rowid IN"
                  " (SELECT chunk_id FROM chunks WHERE doc_id=?)", (doc_id,))
     for tbl in ("chunks", "blocks", "pages", "docs", "company_registry"):
         conn.execute(f"DELETE FROM {tbl} WHERE doc_id=?", (doc_id,))
-    parsed = parse_pdf(pdf_path)
     upsert_doc(conn, doc_id, parsed["company_name"], parsed["stock_code"],
                parsed["doc_type"], len(parsed["pages"]))
     for p in parsed["pages"]:
@@ -252,8 +250,15 @@ def ingest_pdf(conn: sqlite3.Connection, pdf_path: str, do_embed: bool = True) -
             conn.execute("INSERT OR REPLACE INTO company_registry VALUES (?,?,?)",
                          (a, doc_id, parsed["stock_code"]))
     conn.commit()
-    print(f"[ok] {doc_id} 公司={parsed['company_name']} 代码={parsed['stock_code']} "
-          f"页数={len(parsed['pages'])} 表格={len(merged_tables)} chunks={len(chunks)}")
+    print(f"[ok] {doc_id} 公司={parsed['company_name']} 页数={len(parsed['pages'])} "
+          f"表格={len(merged_tables)} chunks={len(chunks)}", flush=True)
+    return doc_id
+
+
+def ingest_pdf(conn: sqlite3.Connection, pdf_path: str, do_embed: bool = True) -> str:
+    """单进程版：解析+写库（冒烟/测试用）。"""
+    parsed = parse_pdf(pdf_path)
+    doc_id = _write_doc(conn, parsed)
     if do_embed:
         _embed_doc_chunks(conn, doc_id)
     return doc_id
@@ -277,20 +282,39 @@ def _embed_doc_chunks(conn: sqlite3.Connection, doc_id: str) -> None:
 if __name__ == "__main__":
     import argparse
     import glob as glob_mod
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdf_dir", default="data/pdf")
-    ap.add_argument("--no-embed", action="store_true")
+    ap.add_argument("--workers", type=int, default=6, help="解析进程数")
+    ap.add_argument("--embed-only", action="store_true", help="只为缺向量的chunk补embedding")
     args = ap.parse_args()
     Path("data").mkdir(exist_ok=True)
     conn = get_conn()
     init_db(conn)
-    # 注意：数据集扩展名是大写 .PDF；Windows glob 大小写不敏感，双 pattern 兜底
+
+    if args.embed_only:
+        for (d,) in conn.execute("SELECT DISTINCT doc_id FROM chunks WHERE emb IS NULL"):
+            print(f"[embed] {d}", flush=True)
+            _embed_doc_chunks(conn, d)
+        raise SystemExit(0)
+
+    # 数据集扩展名大写 .PDF，双 pattern 兜底
     pdfs = sorted(set(glob_mod.glob(str(Path(args.pdf_dir) / "*.pdf")))
                   | set(glob_mod.glob(str(Path(args.pdf_dir) / "*.PDF"))))
-    print(f"[info] 共 {len(pdfs)} 份 PDF")
-    for i, p in enumerate(pdfs, 1):
-        print(f"[{i}/{len(pdfs)}] {Path(p).name}")
-        ingest_pdf(conn, p, do_embed=not args.no_embed)
+    done = {r[0] for r in conn.execute(
+        "SELECT doc_id FROM docs WHERE doc_id IN (SELECT DISTINCT doc_id FROM chunks)")}
+    todo = [p for p in pdfs if Path(p).stem not in done]
+    print(f"[info] 共 {len(pdfs)} 份，已完成 {len(done)}，待处理 {len(todo)}", flush=True)
+    with ProcessPoolExecutor(max_workers=args.workers) as ex:
+        futs = {ex.submit(parse_pdf, p): p for p in todo}
+        for i, fut in enumerate(as_completed(futs), 1):
+            p = futs[fut]
+            try:
+                _write_doc(conn, fut.result())
+            except Exception as e:  # noqa: BLE001 单份失败不拖垮整批
+                print(f"[FAIL] {Path(p).name}: {e}", flush=True)
+            if i % 10 == 0:
+                print(f"[progress] {i}/{len(todo)}", flush=True)
 
 
