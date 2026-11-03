@@ -3,6 +3,7 @@ import json
 import re
 import sqlite3
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -173,11 +174,13 @@ def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
             rec = refuse(qid, "知识库中不存在该公司（80份招股书未覆盖）", "none")
         else:
             r = route(conn, question, doc_id)
-            if r == "doc":
-                rec = answer_doc(conn, qid, question, doc_id)
+            if r == "sql":
+                rec = answer_sql(conn, qid, question, doc_id)
+            elif r == "hybrid":
+                rec = answer_hybrid(conn, qid, question, doc_id)
                 numeric_postprocess(question, rec,
                                     quote_texts=" ".join(c.quote for c in rec.citations))
-            else:  # sql/hybrid 由 Task7 接入，规则命中先按文档路兜底
+            else:
                 rec = answer_doc(conn, qid, question, doc_id)
                 numeric_postprocess(question, rec,
                                     quote_texts=" ".join(c.quote for c in rec.citations))
@@ -270,3 +273,83 @@ def numeric_postprocess(question: str, rec: schema.AnswerRecord,
             extra = "；".join(f"{r['number']}{r.get('unit') or ''}" for r in results[1:])
             rec.answer = f"{rec.answer}（计算校验：{results[0]['number']}{results[0].get('unit') or ''}"
             rec.answer += f"；{extra}）"
+
+
+# ---------- SQL 守卫 ----------
+import sqlglot
+from sqlglot import expressions as exp
+
+_GUARD_BAD = (exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create, exp.Alter,
+              exp.Pragma, exp.Attach, exp.Copy, exp.Command)
+
+
+def sql_guard(sql: str) -> tuple[bool, str]:
+    """白名单：单语句、纯 SELECT、无写/DDL/ATTACH/PRAGMA；自动强制 LIMIT 200。"""
+    try:
+        stmts = sqlglot.parse(sql, read="sqlite")
+    except Exception:
+        return False, ""
+    if len(stmts) != 1 or not isinstance(stmts[0], exp.Select):
+        return False, ""
+    if stmts[0].find(*_GUARD_BAD):
+        return False, ""
+    if not stmts[0].args.get("limit"):
+        sql = f"SELECT * FROM ({sql}) LIMIT 200"
+    return True, sql
+
+
+# ---------- 比赛库只读访问 + schema 卡片 ----------
+COMPETITION_DB = str(Path("data/dataset/博金杯比赛数据.db").resolve())
+
+
+def competition_ro() -> sqlite3.Connection:
+    return sqlite3.connect(f"file:{COMPETITION_DB}?mode=ro", uri=True)
+
+
+def build_schema_cards() -> str:
+    ro = competition_ro()
+    cards = []
+    for (tname,) in ro.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+        cols = [r[1] for r in ro.execute(f'PRAGMA table_info("{tname}")')]
+        n = ro.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
+        cards.append(f"表 {tname}（{n} 行）：{', '.join(cols)}")
+    ro.close()
+    return "\n".join(cards)
+
+
+_SQL_SYSTEM = """你是 Text-to-SQL 助手。只输出一条只读 SQLite SELECT 语句，不要任何解释或 markdown。
+字段名自带单位（如 收盘价(元)），日期字段按字符串比较（如 '2020-12-31'）。表名/字段名须与 Schema 完全一致。"""
+
+
+def answer_sql(conn, qid: str, question: str, doc_id: str | None) -> schema.AnswerRecord:
+    content, usage = llm.chat(_SQL_SYSTEM,
+                              f"Schema：\n{build_schema_cards()}\n\n问题：{question}")
+    sql = content.strip().removeprefix("```sql").removeprefix("```").removesuffix("```").strip()
+    ok, safe_sql = sql_guard(sql)
+    if not ok:
+        return refuse(qid, "生成的 SQL 未通过安全校验，拒答", "sql")
+    ro = competition_ro()
+    cur = ro.execute(safe_sql)
+    rows = cur.fetchmany(200)
+    cols = [d[0] for d in cur.description] if cur.description else []
+    ro.close()
+    ans = "; ".join("，".join(f"{c}={v}" for c, v in zip(cols, r)) for r in rows[:10])
+    return schema.AnswerRecord(question_id=qid, answer=ans or "查询无结果",
+                               answer_type="text", sql=safe_sql, route="sql",
+                               confidence=0.7, tokens=usage)
+
+
+def answer_hybrid(conn, qid: str, question: str, doc_id: str) -> schema.AnswerRecord:
+    """最小版：doc 路为主，sql 路结果拼进 answer，route=hybrid。"""
+    rec = answer_doc(conn, qid, question, doc_id)
+    try:
+        srec = answer_sql(conn, qid, question, doc_id)
+        if srec.sql:
+            rec.sql, rec.route = srec.sql, "hybrid"
+            rec.answer += f"｜数据库侧：{srec.answer}"
+            rec.tokens = {"input": rec.tokens["input"] + srec.tokens["input"],
+                          "output": rec.tokens["output"] + srec.tokens["output"]}
+    except Exception:  # noqa: BLE001 sql 侧失败不拖垮 doc 侧
+        pass
+    return rec
