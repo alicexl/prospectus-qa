@@ -175,8 +175,12 @@ def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
             r = route(conn, question, doc_id)
             if r == "doc":
                 rec = answer_doc(conn, qid, question, doc_id)
+                numeric_postprocess(question, rec,
+                                    quote_texts=" ".join(c.quote for c in rec.citations))
             else:  # sql/hybrid 由 Task7 接入，规则命中先按文档路兜底
                 rec = answer_doc(conn, qid, question, doc_id)
+                numeric_postprocess(question, rec,
+                                    quote_texts=" ".join(c.quote for c in rec.citations))
     except Exception as e:  # noqa: BLE001 单题失败不中断整批
         rec = refuse(qid, f"处理失败：{e}")
     rec.latency_ms = int((time.time() - t0) * 1000)
@@ -206,3 +210,63 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------- 确定性数值计算（LLM 只出意图，不出结果） ----------
+_UNIT_FACTOR = {"元": 1.0, "万元": 1e4, "亿元": 1e8, "%": 1.0, "股": 1.0}
+
+
+def unit_convert(v: float, frm: str, to: str) -> float:
+    return v * _UNIT_FACTOR[frm] / _UNIT_FACTOR[to]
+
+
+def growth(base: float, now: float) -> float:
+    return (now - base) / base
+
+
+def eval_intent(intent: dict) -> dict:
+    """执行 LLM 给出的结构化计算意图。growth/ratio 以 % 输出。"""
+    op = intent["op"]
+    if op == "convert":
+        return {"number": unit_convert(intent["value"], intent["from"], intent["to"]),
+                "unit": intent["to"]}
+    if op == "growth":
+        return {"number": round(growth(intent["base"], intent["now"]) * 100, 4), "unit": "%"}
+    if op == "ratio":
+        return {"number": round(intent["part"] / intent["total"] * 100, 4), "unit": "%"}
+    if op == "sum":
+        return {"number": sum(intent["values"]), "unit": intent.get("unit", "元")}
+    raise ValueError(f"unknown op {op}")
+
+
+_CALC_SYSTEM = """你负责把问题中的计算需求转成计算意图 JSON 数组，禁止自己算出结果。
+可用 op：convert{value,from,to} growth{base,now} ratio{part,total} sum{values,unit}。
+单位只允许：元/万元/亿元/%/股。数值直接用资料中已给出的原文数字。
+只输出 JSON 数组（每个计算一个对象），无计算需求则输出 []。"""
+
+
+def numeric_postprocess(question: str, rec: schema.AnswerRecord,
+                        quote_texts: str = "") -> None:
+    """answer_doc 之后：数值计算类问题用确定性工具重算 value（LLM 零心算）。
+    多问句（如"是多少？增长多少？"）时主值进 value，全部结果写进 answer。"""
+    if rec.answer_type != "number":
+        return
+    content, _u = llm.chat(_CALC_SYSTEM,
+                           f"问题：{question}\n\n候选答案与原文数字：{rec.answer}\n{quote_texts[:2000]}")
+    m = re.search(r"\[.*\]", content, re.S)
+    try:
+        intents = json.loads(m.group(0)) if m else []
+    except json.JSONDecodeError:
+        intents = []
+    results = []
+    for it in intents:
+        try:
+            results.append(eval_intent(it))
+        except (KeyError, ValueError, ZeroDivisionError):
+            continue
+    if results:
+        rec.value = schema.Value(**results[0])
+        if len(results) > 1:
+            extra = "；".join(f"{r['number']}{r.get('unit') or ''}" for r in results[1:])
+            rec.answer = f"{rec.answer}（计算校验：{results[0]['number']}{results[0].get('unit') or ''}"
+            rec.answer += f"；{extra}）"
