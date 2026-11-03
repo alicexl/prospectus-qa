@@ -1,0 +1,11 @@
+# 数据集（~2GB，README 写下载方法）
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 运行产物（results/ 交付物除外，取反保留）
+*.log
+.env
