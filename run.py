@@ -353,3 +353,63 @@ def answer_hybrid(conn, qid: str, question: str, doc_id: str) -> schema.AnswerRe
     except Exception:  # noqa: BLE001 sql 侧失败不拖垮 doc 侧
         pass
     return rec
+
+
+# ---------- 长列表：章节定位 + 整章召回 ----------
+_SEC_START = re.compile(r"第[一二三四五六七八九十百]+节\s*(.+)")
+
+
+def locate_section_chunks(conn, doc_id: str, section_kw: str) -> list[dict]:
+    """标题树找章节起点（如「风险因素」），收录到下一节标题前的全部 chunks——
+    长列表完整性靠整章召回而非 top-k。"""
+    allc = conn.execute(
+        "SELECT chunk_id, pdf_page, text FROM chunks WHERE doc_id=? ORDER BY pdf_page, chunk_id",
+        (doc_id,)).fetchall()
+    inside, started = [], False
+    for cid, pg, text in allc:
+        m = _SEC_START.search(text[:80])
+        if m:
+            if started:
+                break  # 下一节开始 → 收束
+            started = section_kw in m.group(1)
+            if started:
+                inside.append({"chunk_id": cid, "doc_id": doc_id,
+                               "pdf_page": pg, "text": text})
+        elif started:
+            inside.append({"chunk_id": cid, "doc_id": doc_id, "pdf_page": pg, "text": text})
+    return inside
+
+
+_LIST_HINT = re.compile(r"列出|全部|有哪些|分别有哪些")
+
+
+def answer_listq(conn, qid: str, question: str, doc_id: str) -> schema.AnswerRecord:
+    """「列出全部X」类：章节全量召回 → LLM 按层级结构化 → items+条目数（程序校验计数）。"""
+    kw = "风险因素" if "风险" in question else "募集"
+    secs = locate_section_chunks(conn, doc_id, kw)
+    usage = {"input": 0, "output": 0}
+    items: list[str] = []
+    cites: list[dict] = []
+    if secs:
+        ctx = "\n\n".join(f"[pdf_page={s['pdf_page']}]\n{s['text']}" for s in secs[:60])
+        sysp = """你是招股书结构化助手。按原文层级列出全部条目，禁止增删改写。
+输出 JSON（不要其他文字）：{"items": [str], "citations": [{"pdf_page": int, "quote": str}]}
+items 每项一条（风险因素类带类别前缀如"技术风险-产品迭代风险"）；quote 为该项在原文的连续片段（≤80字）。"""
+        content, usage = llm.chat(sysp, f"问题：{question}\n\n章节内容：\n{ctx}")
+        m = re.search(r"\{.*\}", content, re.S)
+        data = json.loads(m.group(0)) if m else {}
+        items = [str(i) for i in (data.get("items") or [])]
+        for ct in data.get("citations", []):
+            cand = {"doc_id": doc_id, "pdf_page": int(ct.get("pdf_page", 0) or 0),
+                    "quote": str(ct.get("quote", ""))}
+            if cand["pdf_page"] > 0 and cand["quote"] and verify_quote(conn, cand):
+                pr = conn.execute("SELECT printed_page FROM pages WHERE doc_id=? AND pdf_page=?",
+                                  (doc_id, cand["pdf_page"])).fetchone()
+                cites.append({**cand, "printed_page": pr[0] if pr else None})
+    n = len(items)
+    if n == 0:
+        return refuse(qid, "未能在知识库中定位相关章节内容", "doc")
+    return schema.AnswerRecord(
+        question_id=qid, answer=f"共 {n} 项", answer_type="list",
+        items=items, citations=[schema.Citation(**c) for c in cites],
+        route="doc", confidence=0.8 if cites else 0.3, tokens=usage)
