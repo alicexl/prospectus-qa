@@ -31,16 +31,19 @@ def _zhipu() -> OpenAI:
     return OpenAI(api_key=os.environ["ZHIPU_API_KEY"], base_url=ZHIPU_BASE)
 
 
-def chat(system: str, user: str, model: str = "deepseek-chat",
+def chat(system: str, user: str, model: str = "deepseek-flash",
          temperature: float = 0.0, retries: int = 3) -> tuple[str, dict]:
-    """返回 (content, usage{input,output})。指数退避重试。"""
+    """返回 (content, usage{input,output})。指数退避重试。
+    flash 默认带思考（completion 里灌 ~100 tok 思考内容），openai 端点用
+    extra_body thinking disabled 关闭（ragbot anthropic 端点同款语义）。"""
     last_err = None
+    extra = {"extra_body": {"thinking": {"type": "disabled"}}} if "flash" in model else {}
     for i in range(retries):
         try:
             resp = _deepseek().chat.completions.create(
                 model=model, temperature=temperature,
                 messages=[{"role": "system", "content": system},
-                          {"role": "user", "content": user}])
+                          {"role": "user", "content": user}], **extra)
             u = resp.usage
             return resp.choices[0].message.content, {"input": u.prompt_tokens, "output": u.completion_tokens}
         except Exception as e:  # noqa: BLE001 限流/网络退避重试

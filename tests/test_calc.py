@@ -17,3 +17,11 @@ def test_eval_intent():
     assert abs(eval_intent({"op": "growth", "base": 30000, "now": 39000})["number"] - 30.0) < 1e-9
     assert eval_intent({"op": "sum", "values": [1.2, 2.3], "unit": "亿元"})["number"] == 3.5
     assert abs(eval_intent({"op": "ratio", "part": 2500, "total": 10000})["number"] - 25.0) < 1e-9
+
+
+def test_eval_intent_string_numbers():
+    # flash 实测会吐带逗号字符串数字
+    r = eval_intent({"op": "growth", "base": "36,708.74", "now": "48,902.67"})
+    assert abs(r["number"] - 33.22) < 0.01
+    r2 = eval_intent({"op": "sum", "values": ["1,684.4092", "25"], "unit": "万元"})
+    assert abs(r2["number"] - 1709.4092) < 1e-6

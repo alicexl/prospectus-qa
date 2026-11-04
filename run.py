@@ -182,10 +182,16 @@ def answer_doc(conn, question_id: str, question: str, doc_id: str) -> schema.Ans
             pr = conn.execute("SELECT printed_page FROM pages WHERE doc_id=? AND pdf_page=?",
                               (doc_id, cand["pdf_page"])).fetchone()
             cites.append({**cand, "printed_page": pr[0] if pr else None})
+    dv = dict(data.get("value") or {})
+    try:
+        if dv.get("number") is not None:
+            dv["number"] = _num(dv["number"])  # LLM 可能吐带逗号字符串数字
+    except ValueError:
+        dv["number"] = None
     rec = schema.AnswerRecord(
         question_id=question_id,
         answer=str(data.get("answer", "")), answer_type=at,
-        value=schema.Value(**(data.get("value") or {})),
+        value=schema.Value(**dv),
         items=[str(i) for i in (data.get("items") or [])],
         citations=[schema.Citation(**c) for c in cites],
         route="doc", confidence=float(data.get("confidence", 0.5)), tokens=usage)
@@ -260,6 +266,11 @@ if __name__ == "__main__" and False:  # 占位被移除——真实入口在文�
 _UNIT_FACTOR = {"元": 1.0, "万元": 1e4, "亿元": 1e8, "%": 1.0, "股": 1.0}
 
 
+def _num(v) -> float:
+    """LLM 可能吐带逗号字符串数字（flash 实测 "1,684.4092"），统一强转。"""
+    return float(str(v).replace(",", ""))
+
+
 def unit_convert(v: float, frm: str, to: str) -> float:
     return v * _UNIT_FACTOR[frm] / _UNIT_FACTOR[to]
 
@@ -272,14 +283,16 @@ def eval_intent(intent: dict) -> dict:
     """执行 LLM 给出的结构化计算意图。growth/ratio 以 % 输出。"""
     op = intent["op"]
     if op == "convert":
-        return {"number": unit_convert(intent["value"], intent["from"], intent["to"]),
+        return {"number": unit_convert(_num(intent["value"]), intent["from"], intent["to"]),
                 "unit": intent["to"]}
     if op == "growth":
-        return {"number": round(growth(intent["base"], intent["now"]) * 100, 4), "unit": "%"}
+        return {"number": round(growth(_num(intent["base"]), _num(intent["now"])) * 100, 4),
+                "unit": "%"}
     if op == "ratio":
-        return {"number": round(intent["part"] / intent["total"] * 100, 4), "unit": "%"}
+        return {"number": round(_num(intent["part"]) / _num(intent["total"]) * 100, 4),
+                "unit": "%"}
     if op == "sum":
-        return {"number": sum(intent["values"]), "unit": intent.get("unit", "元")}
+        return {"number": sum(_num(v) for v in intent["values"]), "unit": intent.get("unit", "元")}
     raise ValueError(f"unknown op {op}")
 
 
