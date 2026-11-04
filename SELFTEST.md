@@ -9,7 +9,7 @@
 python -X utf8 -m pytest tests/ -v                                          # 26 个测试（含真实数据集成）
 python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl      # 8 道官方自测题
 python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl           # 五组指标
-python -X utf8 run.py --input questions/sample30.jsonl --output results/sample30_answers.jsonl   # 1000题抽样30题
+python -X utf8 run.py --input questions/sample100.jsonl --output results/sample100_answers.jsonl   # 100题压测
 ```
 
 ## 1. P0 必做 · 逐项验证
@@ -72,10 +72,10 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 
 | 要求 | 复验命令 | 当前结果 |
 |---|---|---|
-| 路由 doc/sql/hybrid/none | 30 题抽样：`python -X utf8 -c "import json;from collections import Counter;print(Counter(json.loads(l)['route'] for l in open('results/sample30_answers.jsonl',encoding='utf-8')))"` | doc=19 / sql=9 / none=2 |
+| 路由 doc/sql/hybrid/none | 100 题压测：`python -X utf8 -c "import json;from collections import Counter;print(Counter(json.loads(l)['route'] for l in open('results/sample100_answers.jsonl',encoding='utf-8')))"` | sql=60 / doc=40 / none=0 |
 | SQL 只读 + 安全校验 | `python -X utf8 -m pytest tests/test_sqlguard.py -v` | PASSED（DELETE/DROP/UPDATE/多语句/ATTACH/PRAGMA/INSERT 全拦截；SELECT 自动强制 LIMIT）+ `mode=ro` 只读连接双保险 |
 | 实体链接（自建对照表） | `python -X utf8 -c "from ingest import get_conn; print(get_conn().execute('SELECT COUNT(*) FROM company_registry').fetchone()[0])"` | 236 别名（全称+简称），桥梁=招股书封面公司名 ↔ 行情表名称列（IPO 招股书无股票代码，实测封面全称在第 1~16 页） |
-| Text-to-SQL 鲁棒性 | 30 题中 sql 路 9 题 | 执行错误自纠错重试 1 次 + 样例行提示（日期 `'YYYY-MM-DD 00:00:00'` 格式假零已修复：s483 → 2262）；带括号列名双引号包裹 |
+| Text-to-SQL 鲁棒性 | 100 题中 sql 路 60 题 | 执行错误自纠错重试 1 次 + 样例行提示（日期 `'YYYY-MM-DD 00:00:00'` 格式假零已修复：s483 → 2262）；带括号列名双引号包裹 |
 
 ### P1-2 数值计算与单位换算（确定性工具，LLM 零心算）
 
@@ -103,41 +103,45 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 | 延迟 avg / P95 | ~1.6s / ~3.2s |
 | 单题 tokens in/out | ~1790 / ~150 |
 
-## 3. 1000 题抽样压测（question.json，seed=42 固定可复现）
+## 3. 100 题压测（question.json 前 100 题，s0~s99）
 
 抽样与重跑：
 
 ```bash
-python -X utf8 -c "import json,random;qs=[json.loads(l) for l in open('data/question.json',encoding='utf-8') if l.strip()];random.Random(42).shuffle(qs);open('questions/sample30.jsonl','w',encoding='utf-8').write(''.join(json.dumps({'question_id':'s%d'%q['id'],'question':q['question']},ensure_ascii=False)+chr(10) for q in qs[:30]))"
-python -X utf8 run.py --input questions/sample30.jsonl --output results/sample30_answers.jsonl
+python -X utf8 -c "import json;qs=[json.loads(l) for l in open('data/question.json',encoding='utf-8') if l.strip()];open('questions/sample100.jsonl','w',encoding='utf-8').write(''.join(json.dumps({'question_id':'s%d'%q['id'],'question':q['question']},ensure_ascii=False)+chr(10) for q in qs[:100]))"
+python -X utf8 run.py --input questions/sample100.jsonl --output results/sample100_answers.jsonl
 ```
 
-当前结果（30/30 零崩溃）：
+当前结果（100/100 零崩溃）：
 
 | 指标 | 结果 |
 |---|---|
-| Schema 合规 | 30/30 |
-| 引用逐字重验（无标注可验） | 36/36 |
-| 答案类型分布 | text=21 / list=4 / number=3 / refusal=2 |
-| 路由分布 | doc=19 / sql=9 / none=2 |
-| 拒答 | 2 条，均为库外公司（s776 真兰仪表 / s501 中海达——80 份未覆盖，拒得正确）；此前的 3 条检索未命中误拒（s922/s350/s770）已全部修复（见下） |
-| 延迟 avg / P95 | 2203 / 3151 ms |
-| 平均 in_tokens | 1930 |
+| Schema 合规 | 100/100 |
+| 引用逐字重验 | 106/106 |
+| 答案类型分布 | text=83 / list=12 / number=5 / refusal=0 |
+| 路由分布 | sql=60 / doc=40 / none=0（与标签 qtype 100% 一致） |
+| 拒答 | 0 条（标签 expect_refusal 亦为 0） |
+| 延迟 avg / P95 | 5441 / 4937 ms（中位数 2223；s19 大表 JOIN 慢查询 180s 拉高均值） |
+| 平均 in_tokens | 2112 |
 
-sql 路抽查独立复核：s523（20191121 成交额前三）答案 601318/000651/600519 与自写 SQL 复核**完全一致**；s483 修复日期格式假零后 = 2262。
+与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 97/100 一致，3 处差异：
+
+- s45 三年销售费用：标签 number 但 value.number=None（多值题标签局限），答案内容与标签一致
+- s75 年化收益率：数值正确（86.57=人工裁决）但 SQL 列名污染显示 + SQL 路恒 text 类型
+- s92 第 6 大重仓股季度涨跌幅：口径错误（MAX-MIN 29.13 vs 人工裁决 -3.06），标注期已知
 
 ### 抽样压测揪出并已修复的问题
 
-1. **实体链接失败短路误杀 DB 题**：`answer_one` 里公司匹配不到直接拒答，纯 DB 题（基金/行情/行业）没机会走 sql 路 → 改为先探 SQL hint 再决（30 题 sql 路 5→9）
+1. **实体链接失败短路误杀 DB 题**：`answer_one` 里公司匹配不到直接拒答，纯 DB 题（基金/行情/行业）没机会走 sql 路 → 改为先探 SQL hint 再决
 2. **路由关键词缺口**：行业分类/成交金额/振幅/港股/股票代码等不在 hint → 补充
 3. **SQL 鲁棒性**：多语句/幻觉列名直接崩「处理失败」→ 拆分号取首条 + 执行错误带报错自纠错重试 1 次 + 失败优雅拒答
 4. **日期格式假零**：库里日期是 `'2021-03-31 00:00:00'`，LLM 等值匹配静默得 COUNT=0 → schema 卡片附样例行 + prompt 明示前缀 LIKE
 5. **flash 关思考**（openai 端点 extra_body）+ LLM 吐带逗号字符串数字强转（`_num`）
 6. **检索未命中型误拒**（s922 海外项目金额 / s350 主营业务 / s770 推广阶段产品）：分词 token 低于 FTS5 trigram 3 字下限（海外/项目/金额全是 2 字词，query 退化成「人民币」）+ 年份 token 把财务表格片顶上来 → 最终方案＝**吸收 ragbot 的 scope-then-score**：doc 圈定后内存手写 Okapi BM25（jieba 词级、doc 内 IDF、token 进程缓存 2.2s→0.33s），弃全库 FTS 扫描（trigram OR 全库打分慢一个数量级）；k 8→10
-7. **openai SDK 默认超时 600s + 静默重试**：连接悬挂吊死整题 10 分钟（30 题批卡在 18/30 的根因）→ 显式 timeout=60s + max_retries=0，自管重试兜底（单题最坏 3 分钟后优雅拒答）
+7. **openai SDK 默认超时 600s + 静默重试**：连接悬挂吊死整题 10 分钟 → 显式 timeout=60s + max_retries=0，自管重试兜底（单题最坏 3 分钟后优雅拒答）
 
 ### 已知限制（如实披露）
 
-- 抽样 30 题无标准答案，正确性仅以 Schema/引用逐字/独立复核 sql 抽查衡量（s523 独立复核全对）
-- 30 题中 list/number 类文档题的数值未逐题人工核对
-- sql 路复杂多表 join 题（如 s732 可转债持仓×申万行业）依赖 LLM 生成质量，错误时由自纠错/拒答兜底
+- 100 题标签由确定性流水线 + 交叉验证 + 人工裁决产出，与管线同源——一致性对照反映稳定性而非独立正确性
+- 引用正确率评估把 SQL 路零引用答案（s75/s92）按失败计（evaluate 公式要求非拒答须有 citations），实际引用 106/106 逐字全过
+- sql 路复杂多表 join 题（如 s92 季度涨跌幅口径）依赖 LLM 生成质量，错误时由自纠错/拒答兜底

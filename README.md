@@ -40,7 +40,7 @@ python -X utf8 ingest.py
 python -X utf8 ingest.py --embed-only
 
 # ③ 问答：逐行输出题目 §4 Schema 的 JSON
-python -X utf8 run.py --input questions/      # selftest.jsonl(8题) + sample30.jsonl(1000题抽样)
+python -X utf8 run.py --input questions/      # selftest.jsonl(8题) + sample100.jsonl(100题压测)
 # questions/selftest.jsonl --output results/answers.jsonl
 
 # ④ 评估：五组指标 → results/metrics.json

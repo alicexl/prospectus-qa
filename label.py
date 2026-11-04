@@ -1,5 +1,5 @@
 """标准答案标注流水线：确定性优先，LLM 辅助不定标。
-CLI: python -X utf8 label.py --input questions/sample30.jsonl --output labels_pilot.jsonl [--review review_pilot.md]
+CLI: python -X utf8 label.py --input questions/sample100.jsonl --output labels_pilot.jsonl [--review review_pilot.md]
 
 流程（用户拍板）：
 1 题型判定（sql/doc/hybrid，规则）
