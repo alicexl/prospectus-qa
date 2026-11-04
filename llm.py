@@ -35,7 +35,7 @@ def _zhipu() -> OpenAI:
 
 
 def chat(system: str, user: str, model: str = "deepseek-flash",
-         temperature: float = 0.0, retries: int = 3) -> tuple[str, dict]:
+         temperature: float = 0.0, retries: int = 5) -> tuple[str, dict]:
     """返回 (content, usage{input,output})。指数退避重试。
     flash 默认带思考（completion 里灌 ~100 tok 思考内容），openai 端点用
     extra_body thinking disabled 关闭（ragbot anthropic 端点同款语义）。"""

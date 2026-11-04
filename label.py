@@ -144,7 +144,15 @@ def main():
         if not line.strip():
             continue
         item = json.loads(line)
-        r = label_one(conn, item["question_id"], item["question"])
+        try:
+            r = label_one(conn, item["question_id"], item["question"])
+        except Exception as e:  # noqa: BLE001 限流/超时等：单题失败不崩整片
+            r = {"id": item["question_id"], "question": item["question"],
+                 "qtype": None, "doc_id": None, "answer": None, "answer_type": None,
+                 "value": None, "items": None,
+                 "evidence": {"type": "error", "detail": str(e)[:200]},
+                 "verification_status": "needs_review",
+                 "review_reasons": [f"标注过程异常：{str(e)[:80]}"]}
         rows.append(r)
         print(f"[{r['verification_status']:>12}] {r['id']} {r['qtype']:<6} "
               f"{(r['answer'] or '')[:40]}", flush=True)
