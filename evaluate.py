@@ -66,10 +66,15 @@ def citation_acc(pred: dict, pages_conn: sqlite3.Connection | None) -> float:
         return 0.0
     ok = 0
     for c in cites:
-        row = pages_conn.execute(
+        page = pages_conn.execute(
             "SELECT text FROM pages WHERE doc_id=? AND pdf_page=?",
             (c.get("doc_id"), c.get("pdf_page"))).fetchone()
-        if row and _norm(c.get("quote", "")) in _norm(row[0]):
+        if not page:
+            continue
+        texts = [page[0]] + [r[0] for r in pages_conn.execute(
+            "SELECT text FROM blocks WHERE doc_id=? AND pdf_page=? AND type='table'",
+            (c.get("doc_id"), c.get("pdf_page"))).fetchall()]
+        if any(_norm(c.get("quote", "")) in _norm(t) for t in texts):
             ok += 1
     return ok / len(cites)
 
