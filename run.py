@@ -96,7 +96,8 @@ def link_company(conn: sqlite3.Connection, question: str) -> str | None:
 # ---------- 路由（规则优先） ----------
 _SQL_HINT = re.compile(r"基金|持仓|行情|份额|规模变动|持有人结构|日行情|涨跌幅|净值"
                        r"|行业划分|行业分类|一级行业|二级行业|申万|中信"
-                       r"|成交金额|振幅|收盘|开盘|港股|股票代码")
+                       r"|成交金额|振幅|收盘|开盘|港股|股票代码"
+                       r"|日收益率|A股公司|上市公司")
 _DOC_HINT = re.compile(r"招股书|披露|募集|风险因素|发行股数|发行价格|营业收入|主营业务|承诺")
 
 
@@ -279,6 +280,8 @@ def answer_doc(conn, question_id: str, question: str, doc_id: str) -> schema.Ans
             dv["number"] = _num(dv["number"])  # LLM 可能吐带逗号字符串数字
     except ValueError:
         dv["number"] = None
+    if dv.get("unit") not in ("元", "万元", "亿元", "%", "股"):  # 题目枚举外的单位(次/人/家)置None
+        dv["unit"] = None
     rec = schema.AnswerRecord(
         question_id=question_id,
         answer=str(data.get("answer", "")), answer_type=at,
