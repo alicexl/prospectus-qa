@@ -175,8 +175,8 @@ _RE_SHORT = re.compile(r"(?:公司简称|公司名称)[：:\s]*([一-龥A-Za-z0-
 
 
 def extract_company_meta(pages: list[dict]) -> tuple[str, str, str]:
-    """从前 8 页文本抽公司全称/股票代码；doc_type 由关键词判定。"""
-    head_text = "\n".join(p["text"] for p in pages[:8])
+    """从前 20 页文本抽公司全称/股票代码（个别创业板文档公司名在第 16 页后才出现）。"""
+    head_text = "\n".join(p["text"] for p in pages[:20])
     m = _RE_COMPANY.search(head_text)
     company = m.group(1) if m else ""
     c = _RE_CODE.search(head_text)
@@ -291,13 +291,14 @@ def ingest_pdf(conn: sqlite3.Connection, pdf_path: str, do_embed: bool = True) -
 
 
 def _embed_doc_chunks(conn: sqlite3.Connection, doc_id: str) -> None:
-    import llm
     import numpy as np
+
+    import llm
     rows = conn.execute(
         "SELECT chunk_id, text FROM chunks WHERE doc_id=? AND emb IS NULL", (doc_id,)).fetchall()
     if not rows:
         return
-    vecs = llm.embed([r[1] for r in rows])
+    vecs = llm.embed_parallel([r[1] for r in rows])
     for (cid, _), v in zip(rows, vecs):
         conn.execute("UPDATE chunks SET emb=? WHERE chunk_id=?",
                      (np.asarray(v, dtype=np.float32).tobytes(), cid))
@@ -320,8 +321,18 @@ if __name__ == "__main__":
     init_db(conn)
 
     if args.embed_only:
-        for (d,) in conn.execute("SELECT DISTINCT doc_id FROM chunks WHERE emb IS NULL"):
-            print(f"[embed] {d}", flush=True)
+        # 自测题相关公司优先（含"东微/国科微"别名的 doc 先补向量），其余按 doc_id 序
+        pri = [r[0] for r in conn.execute(
+            "SELECT DISTINCT doc_id FROM company_registry "
+            "WHERE alias LIKE '%东微%' OR alias LIKE '%国科微%'")]
+        rest = [r[0] for r in conn.execute(
+            "SELECT DISTINCT doc_id FROM chunks WHERE emb IS NULL ORDER BY doc_id")]
+        for d in [x for x in pri if x in rest] + [x for x in rest if x not in pri]:
+            n = conn.execute("SELECT COUNT(*) FROM chunks WHERE doc_id=? AND emb IS NULL",
+                             (d,)).fetchone()[0]
+            if n == 0:
+                continue
+            print(f"[embed] {d} ({n} chunks)", flush=True)
             _embed_doc_chunks(conn, d)
         raise SystemExit(0)
 

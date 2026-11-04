@@ -50,10 +50,11 @@ def chat(system: str, user: str, model: str = "deepseek-chat",
 
 
 def embed(texts: list[str]) -> list[list[float]]:
-    """智谱 embedding-3，分批 64，返回与输入等长向量列表。"""
+    """智谱 embedding-3，分批 64，返回与输入等长向量列表。
+    单条截断 1800 字（超长合并表 chunk 会 400），空串以占位符替代。"""
     out: list[list[float]] = []
     for i in range(0, len(texts), 64):
-        batch = texts[i:i + 64]
+        batch = [(t or "空")[:1800] for t in texts[i:i + 64]]
         for attempt in range(3):
             try:
                 resp = _zhipu().embeddings.create(model="embedding-3", input=batch)
@@ -64,3 +65,20 @@ def embed(texts: list[str]) -> list[list[float]]:
                     raise
                 time.sleep(2 ** attempt)
     return out
+
+
+def embed_parallel(texts: list[str], workers: int = 8) -> list[list[float]]:
+    """并发版 embed：HTTP 密集型，线程池提速（134k chunks 串行要数小时）。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    batches = [(i, texts[i:i + 64]) for i in range(0, len(texts), 64)]
+    out: dict[int, list[float]] = {}
+
+    def _run(b):
+        return b[0], embed(b[1])
+
+    with ThreadPoolExecutor(workers) as ex:
+        for start, vecs in ex.map(_run, batches):
+            for j, v in enumerate(vecs):
+                out[start + j] = v
+    return [out[k] for k in range(len(texts))]
