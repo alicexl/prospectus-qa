@@ -6,7 +6,7 @@
 ## 0. 一键复验入口
 
 ```bash
-python -X utf8 -m pytest tests/ -v                                          # 26 个测试
+python -X utf8 -m pytest tests/ -v                                          # 26 个测试（含真实数据集成）
 python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl      # 8 道官方自测题
 python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl           # 五组指标
 python -X utf8 run.py --input questions/sample30.jsonl --output results/sample30_answers.jsonl   # 1000题抽样30题
@@ -117,11 +117,11 @@ python -X utf8 run.py --input questions/sample30.jsonl --output results/sample30
 | 指标 | 结果 |
 |---|---|
 | Schema 合规 | 30/30 |
-| 引用逐字重验（无标注可验） | 43/43 |
-| 答案类型分布 | text=16 / list=5 / number=4 / refusal=5 |
+| 引用逐字重验（无标注可验） | 36/36 |
+| 答案类型分布 | text=21 / list=4 / number=3 / refusal=2 |
 | 路由分布 | doc=19 / sql=9 / none=2 |
-| 拒答 | 5 条：2 条库外公司（正确），3 条检索未命中（s922 海外项目金额 / s350 主营业务构成 / s770 推广阶段产品——已知限制） |
-| 延迟 avg / P95 | 2098 / 3692 ms |
+| 拒答 | 2 条，均为库外公司（s776 真兰仪表 / s501 中海达——80 份未覆盖，拒得正确）；此前的 3 条检索未命中误拒（s922/s350/s770）已全部修复（见下） |
+| 延迟 avg / P95 | 2203 / 3151 ms |
 | 平均 in_tokens | 1930 |
 
 sql 路抽查独立复核：s523（20191121 成交额前三）答案 601318/000651/600519 与自写 SQL 复核**完全一致**；s483 修复日期格式假零后 = 2262。
@@ -133,9 +133,11 @@ sql 路抽查独立复核：s523（20191121 成交额前三）答案 601318/0006
 3. **SQL 鲁棒性**：多语句/幻觉列名直接崩「处理失败」→ 拆分号取首条 + 执行错误带报错自纠错重试 1 次 + 失败优雅拒答
 4. **日期格式假零**：库里日期是 `'2021-03-31 00:00:00'`，LLM 等值匹配静默得 COUNT=0 → schema 卡片附样例行 + prompt 明示前缀 LIKE
 5. **flash 关思考**（openai 端点 extra_body）+ LLM 吐带逗号字符串数字强转（`_num`）
+6. **检索未命中型误拒**（s922 海外项目金额 / s350 主营业务 / s770 推广阶段产品）：分词 token 低于 FTS5 trigram 3 字下限（海外/项目/金额全是 2 字词，query 退化成「人民币」）+ 年份 token 把财务表格片顶上来 → 最终方案＝**吸收 ragbot 的 scope-then-score**：doc 圈定后内存手写 Okapi BM25（jieba 词级、doc 内 IDF、token 进程缓存 2.2s→0.33s），弃全库 FTS 扫描（trigram OR 全库打分慢一个数量级）；k 8→10
+7. **openai SDK 默认超时 600s + 静默重试**：连接悬挂吊死整题 10 分钟（30 题批卡在 18/30 的根因）→ 显式 timeout=60s + max_retries=0，自管重试兜底（单题最坏 3 分钟后优雅拒答）
 
-### 已知限制（不修，如实披露）
+### 已知限制（如实披露）
 
-- 3 题检索未命中型误拒（长尾信息埋在章节中部，top-k+同页表格联动未覆盖）——改进方向：章节定位泛化到非「风险因素」类问题
-- 抽样 30 题无标准答案，正确性仅以 Schema/引用逐字/独立复核 sql 抽查衡量
+- 抽样 30 题无标准答案，正确性仅以 Schema/引用逐字/独立复核 sql 抽查衡量（s523 独立复核全对）
 - 30 题中 list/number 类文档题的数值未逐题人工核对
+- sql 路复杂多表 join 题（如 s732 可转债持仓×申万行业）依赖 LLM 生成质量，错误时由自纠错/拒答兜底

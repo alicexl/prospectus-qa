@@ -1,5 +1,6 @@
 """问答管线 CLI：python -X utf8 run.py --input questions.jsonl --output answers.jsonl"""
 import json
+import math
 import re
 import sqlite3
 import time
@@ -62,16 +63,64 @@ def route(conn: sqlite3.Connection, question: str, doc_id: str | None) -> str:
     return "doc"
 
 
-# ---------- 混合检索 ----------
+# ---------- 混合检索（ragbot 同构：scope-then-score——doc圈定后库内/内存打分） ----------
 import jieba
+from collections import Counter
+
+_WORD = re.compile(r"[一-鿿A-Za-z0-9]+")
 
 
-def _fts_query(query: str) -> str:
-    """jieba 分词 → ≥3字 token（trigram 下限）→ 引号包裹 OR 连接。
-    不分词时整句成巨型 token，trigram 短语匹配必然落空。"""
-    toks = [t for t in jieba.lcut(query)
-            if len(t) >= 3 and re.fullmatch(r"[一-鿿A-Za-z0-9]+", t)][:8]
-    return " OR ".join(f'"{t}"' for t in toks) if toks else '" impossibletoken "'
+def _tokens(text: str) -> list[str]:
+    """jieba 词级 token（内存 BM25 无 3 字下限，2 字词直接可用）。"""
+    return [t for t in jieba.lcut(re.sub(r"(?<![0-9])(19|20)\d{2}(?![0-9])\s*年?", "", text))
+            if _WORD.fullmatch(t)]
+
+
+_TOK_CACHE: dict[str, dict[int, list[str]]] = {}  # doc_id -> {chunk_id: tokens}
+
+
+def _doc_tokens(conn, doc_id: str, rows: list[tuple]) -> list[tuple[int, list[str]]]:
+    """chunk 分词带进程内缓存（现切 1800 chunk ≈2s，同 doc 多题复用）。"""
+    cache = _TOK_CACHE.get(doc_id)
+    if cache is None:
+        cache = {r[0]: _tokens(r[3]) for r in rows}
+        _TOK_CACHE[doc_id] = cache
+    return [(r[0], cache[r[0]]) for r in rows]
+
+
+def _bm25(query_toks: list[str], doc_chunks: list[tuple[int, list[str]]],
+          k1: float = 1.5, b: float = 0.75) -> list[tuple[int, float]]:
+    """内存 Okapi BM25，doc 内 IDF（scope-then-score：圈定后才打分，
+    不做全库 FTS 扫描——trigram OR 全库打分实测慢一个数量级）。"""
+    N = len(doc_chunks)
+    if not N or not query_toks:
+        return []
+    df = Counter()
+    tf: dict[int, Counter] = {}
+    lens = {}
+    for cid, toks_ in doc_chunks:
+        c = Counter(toks_)
+        tf[cid] = c
+        lens[cid] = len(toks_) or 1
+        for t in query_toks:
+            if t in c:
+                df[t] += 1
+    avgdl = sum(lens.values()) / N
+    qset = set(query_toks)
+    out = []
+    for cid in tf:
+        s = 0.0
+        for t in qset:
+            f = tf[cid].get(t, 0)
+            if not f:
+                continue
+            idf = math.log(1 + (N - df[t] + 0.5) / (df[t] + 0.5))
+            denom = f + k1 * (1 - b + b * lens[cid] / avgdl)
+            s += idf * f * (k1 + 1) / denom
+        if s > 0:
+            out.append((cid, s))
+    out.sort(key=lambda x: -x[1])
+    return out
 
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -80,24 +129,19 @@ def _cos(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def search(conn: sqlite3.Connection, query: str, doc_id: str | None = None, k: int = 8) -> list[dict]:
-    """BM25(FTS5 trigram) + 向量余弦 → RRF top-k（doc 路默认限单文档）。"""
-    where, params = ("AND c.doc_id=?", [doc_id]) if doc_id else ("", [])
-    try:
-        bm = conn.execute(
-            f"""SELECT c.chunk_id FROM chunks_fts f
-                JOIN chunks c ON c.rowid = f.rowid
-                WHERE chunks_fts MATCH ? {where}
-                ORDER BY rank LIMIT 30""",
-            [_fts_query(query)] + params).fetchall()
-    except sqlite3.OperationalError:
-        bm = []
-    qvec = np.asarray(llm.embed([query])[0], dtype=np.float32)
+    """doc 圈定 → 内存 BM25(jieba) + 向量余弦 → RRF top-k。"""
+    where, params = ("WHERE doc_id=?", [doc_id]) if doc_id else ("", [])
     rows = conn.execute(
-        f"SELECT chunk_id, doc_id, pdf_page, text, emb FROM chunks {'WHERE doc_id=?' if doc_id else ''}",
-        params).fetchall()
+        f"SELECT chunk_id, doc_id, pdf_page, text, emb FROM chunks {where}", params).fetchall()
+    if not rows:
+        return []
+    q_toks = _tokens(query)
+    doc_chunks = _doc_tokens(conn, doc_id or "", rows)
+    bm = _bm25(q_toks, doc_chunks)[:30]
+    qvec = np.asarray(llm.embed([query])[0], dtype=np.float32)
     vecs = sorted(((r[0], _cos(qvec, np.frombuffer(r[4], dtype=np.float32)))
                    for r in rows if r[4]), key=lambda x: -x[1])
-    scores = rrf([(r[0],) for r in bm], [(i,) for i, _ in vecs[:30]])
+    scores = rrf([(i,) for i, _ in bm], [(i,) for i, _ in vecs[:30]])
     by_id = {r[0]: r for r in rows}
     top = sorted(scores.items(), key=lambda kv: -kv[1])[:k]
     out = [{"chunk_id": cid, "doc_id": by_id[cid][1], "pdf_page": by_id[cid][2],
@@ -162,7 +206,7 @@ _DOC_SYSTEM = """你是招股书问答助手。仅依据给出的资料片段回
 
 def answer_doc(conn, question_id: str, question: str, doc_id: str) -> schema.AnswerRecord:
     q_ret = strip_company(conn, question, doc_id)  # 检索用剥公司名的query
-    chunks = search(conn, q_ret, doc_id=doc_id, k=8)
+    chunks = search(conn, q_ret, doc_id=doc_id, k=10)
     usage = {"input": 0, "output": 0}
     data: dict = {}
     if chunks:

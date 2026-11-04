@@ -24,11 +24,14 @@ _load_dotenv()
 
 
 def _deepseek() -> OpenAI:
-    return OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=DEEPSEEK_BASE)
+    # SDK默认超时600s+静默重试2次——连接悬挂会吊住整题10分钟（实测卡死根因）
+    return OpenAI(api_key=os.environ["DEEPSEEK_API_KEY"], base_url=DEEPSEEK_BASE,
+                  timeout=60.0, max_retries=0)
 
 
 def _zhipu() -> OpenAI:
-    return OpenAI(api_key=os.environ["ZHIPU_API_KEY"], base_url=ZHIPU_BASE)
+    return OpenAI(api_key=os.environ["ZHIPU_API_KEY"], base_url=ZHIPU_BASE,
+                  timeout=60.0, max_retries=0)
 
 
 def chat(system: str, user: str, model: str = "deepseek-flash",
