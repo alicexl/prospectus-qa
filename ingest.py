@@ -187,6 +187,50 @@ def extract_company_meta(pages: list[dict]) -> tuple[str, str, str]:
     return company, code, doc_type
 
 
+# ---------- 表格 chunk 构造（小表整片；超长表按行拆片，每片重复表头+章节引导句） ----------
+_HEADING_LINE = re.compile(
+    r"^(第[一二三四五六七八九十百]+节\s*.+|[一二三四五六七八九十]+、\S.*"
+    r"|（[一二三四五六七八九十]+）\S.*|\d+(\.\d+)+\s?\S.*)$")
+
+
+def _page_guides(pages: list[dict]) -> dict[int, str]:
+    """page -> 该页结束时的当前标题行（节/小节标题，作表格引导句）。"""
+    guides, cur = {}, ""
+    for p in pages:
+        for line in p["text"].split("\n"):
+            s = line.strip()
+            if len(s) <= 40 and _HEADING_LINE.match(s):
+                cur = s
+        guides[p["pdf_page"]] = cur
+    return guides
+
+
+def table_chunk_texts(pages: list[dict], merged_tables: list[dict],
+                      max_chars: int = 1200, rows_per_piece: int = 50) -> list[dict]:
+    """小表整表一片；超长表按行拆片（片内行列完整、每片重复表头行）；
+    每片前拼章节引导句——超长合并表的 embedding 不再被全表平均稀释。"""
+    guides = _page_guides(pages)
+    out: list[dict] = []
+    for mt in merged_tables:
+        rows = mt["rows"]
+        if not rows:
+            continue
+        header, body = rows[0], rows[1:]
+        guide = guides.get(mt["pdf_page"], "")
+        prefix = "[表格]" + (f"{guide}：" if guide else "")
+
+        def piece(rs, start_page):
+            return {"pdf_page": start_page,
+                    "text": prefix + table_to_text([header] + rs)}
+
+        if len(table_to_text(rows)) <= max_chars:
+            out.append({"pdf_page": mt["pdf_page"], "text": prefix + table_to_text(rows)})
+        else:
+            for i in range(0, len(body), rows_per_piece):
+                out.append(piece(body[i:i + rows_per_piece], mt["pdf_page"]))
+    return out
+
+
 # ---------- 建库 ----------
 import json
 import sqlite3
@@ -259,8 +303,8 @@ def _write_doc(conn: sqlite3.Connection, parsed: dict) -> str:
     # 文本 chunk：pages 去掉 tables（build_chunks 只切文本）
     text_pages = [{k: v for k, v in p.items() if k != "tables"} for p in parsed["pages"]]
     chunks = build_chunks(text_pages, doc_id)
-    for mt in merged_tables:
-        chunks.append({"pdf_page": mt["pdf_page"], "text": "[表格]\n" + table_to_text(mt["rows"])})
+    # 表格 chunk：小表整片、超长表按行拆片（带表头+章节引导句）
+    chunks.extend(table_chunk_texts(parsed["pages"], merged_tables))
     for c in chunks:
         cur = conn.execute("INSERT INTO chunks(doc_id, pdf_page, text) VALUES (?,?,?)",
                            (doc_id, c["pdf_page"], c["text"]))
