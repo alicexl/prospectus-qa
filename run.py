@@ -61,9 +61,14 @@ def route(conn: sqlite3.Connection, question: str, doc_id: str | None) -> str:
 
 
 # ---------- 混合检索 ----------
+import jieba
+
+
 def _fts_query(query: str) -> str:
-    """净化成 FTS5 安全查询：中文/字母数字 token 化，≥3字（trigram 下限）引号包裹 OR 连接。"""
-    toks = [t for t in re.findall(r"[一-鿿A-Za-z0-9]+", query) if len(t) >= 3][:8]
+    """jieba 分词 → ≥3字 token（trigram 下限）→ 引号包裹 OR 连接。
+    不分词时整句成巨型 token，trigram 短语匹配必然落空。"""
+    toks = [t for t in jieba.lcut(query)
+            if len(t) >= 3 and re.fullmatch(r"[一-鿿A-Za-z0-9]+", t)][:8]
     return " OR ".join(f'"{t}"' for t in toks) if toks else '" impossibletoken "'
 
 
@@ -93,8 +98,20 @@ def search(conn: sqlite3.Connection, query: str, doc_id: str | None = None, k: i
     scores = rrf([(r[0],) for r in bm], [(i,) for i, _ in vecs[:30]])
     by_id = {r[0]: r for r in rows}
     top = sorted(scores.items(), key=lambda kv: -kv[1])[:k]
-    return [{"chunk_id": cid, "doc_id": by_id[cid][1], "pdf_page": by_id[cid][2],
-             "text": by_id[cid][3], "rrf_score": s} for cid, s in top if cid in by_id]
+    out = [{"chunk_id": cid, "doc_id": by_id[cid][1], "pdf_page": by_id[cid][2],
+            "text": by_id[cid][3], "rrf_score": s} for cid, s in top if cid in by_id]
+    # 文本chunk入选 → 同页表格chunk自动带上（表格bbox已从正文剔除，是文本的数值补充）
+    if doc_id and out:
+        got = {o["chunk_id"] for o in out}
+        pages_hit = {o["pdf_page"] for o in out}
+        ph = ",".join("?" * len(pages_hit))
+        for r in conn.execute(
+                f"SELECT chunk_id, doc_id, pdf_page, text FROM chunks "
+                f"WHERE doc_id=? AND pdf_page IN ({ph}) AND text LIKE '[表格%'", [doc_id, *pages_hit]):
+            if r[0] not in got and len(out) < k + 6:
+                out.append({"chunk_id": r[0], "doc_id": r[1], "pdf_page": r[2],
+                            "text": r[3], "rrf_score": 0.0})
+    return out
 
 
 # ---------- quote 程序化逐字校验 ----------
@@ -107,10 +124,28 @@ def norm_text(s: str) -> str:
 
 
 def verify_quote(conn: sqlite3.Connection, cite: dict) -> bool:
-    """quote 必须能在 doc_id+pdf_page 对应页文本上逐字（规范化后）找到。"""
-    row = conn.execute("SELECT text FROM pages WHERE doc_id=? AND pdf_page=?",
-                       (cite["doc_id"], cite["pdf_page"])).fetchone()
-    return bool(row) and norm_text(cite["quote"]) in norm_text(row[0])
+    """quote 必须能在 doc_id+pdf_page 对应页逐字（规范化后）找到。
+    页文本不含表格区域（bbox 已剔除），表格内容在 blocks 里——两者并集校验。"""
+    page = conn.execute("SELECT text FROM pages WHERE doc_id=? AND pdf_page=?",
+                        (cite["doc_id"], cite["pdf_page"])).fetchone()
+    if not page:
+        return False
+    texts = [page[0]] + [r[0] for r in conn.execute(
+        "SELECT text FROM blocks WHERE doc_id=? AND pdf_page=? AND type='table'",
+        (cite["doc_id"], cite["pdf_page"])).fetchall()]
+    nq = norm_text(cite["quote"])
+    return any(nq in norm_text(t) for t in texts)
+
+
+def strip_company(conn: sqlite3.Connection, question: str, doc_id: str) -> str:
+    """检索前剥离公司别名：doc 已锁定，query 里的公司名只会在向量侧匹配到
+    每页页眉（页页含公司名），挤掉真正含答案的 chunk。"""
+    q = question
+    aliases = [r[0] for r in conn.execute(
+        "SELECT alias FROM company_registry WHERE doc_id=?", (doc_id,)).fetchall()]
+    for a in sorted(aliases, key=len, reverse=True):
+        q = q.replace(a, "")
+    return q.strip() or question
 
 
 # ---------- doc 路生成 ----------
@@ -124,7 +159,8 @@ _DOC_SYSTEM = """你是招股书问答助手。仅依据给出的资料片段回
 
 
 def answer_doc(conn, question_id: str, question: str, doc_id: str) -> schema.AnswerRecord:
-    chunks = search(conn, question, doc_id=doc_id, k=8)
+    q_ret = strip_company(conn, question, doc_id)  # 检索用剥公司名的query
+    chunks = search(conn, q_ret, doc_id=doc_id, k=8)
     usage = {"input": 0, "output": 0}
     data: dict = {}
     if chunks:
@@ -132,10 +168,10 @@ def answer_doc(conn, question_id: str, question: str, doc_id: str) -> schema.Ans
         content, usage = llm.chat(_DOC_SYSTEM, f"问题：{question}\n\n资料：\n{ctx}")
         m = re.search(r"\{.*\}", content, re.S)
         data = json.loads(m.group(0)) if m else {}
-    # 拒答判定③：检索置信不足
+    # 拒答判定③：检索置信不足（0.012=单路 RRF top8 可达；两路齐时 top1≈0.033）
     top_score = chunks[0]["rrf_score"] if chunks else 0.0
     at = data.get("answer_type", "refusal")
-    if not chunks or (top_score < 0.016 and at != "refusal"):
+    if not chunks or (top_score < 0.012 and at != "refusal"):
         at, data["answer"] = "refusal", "知识库中未检索到与问题充分相关的披露内容"
     # 引用逐字校验：校验不过的引用直接丢弃
     cites = []
@@ -173,6 +209,11 @@ def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
         if doc_id is None:
             rec = refuse(qid, "知识库中不存在该公司（80份招股书未覆盖）", "none")
         else:
+            # 长列表题（列出全部X）：走章节全量召回
+            if _LIST_HINT.search(question) and ("风险" in question or "全部" in question):
+                rec = answer_listq(conn, qid, question, doc_id)
+                rec.latency_ms = int((time.time() - t0) * 1000)
+                return rec
             r = route(conn, question, doc_id)
             if r == "sql":
                 rec = answer_sql(conn, qid, question, doc_id)
@@ -211,8 +252,8 @@ def main():
             print(f"[done] {item['question_id']} -> {rec.answer_type}")
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__" and False:  # 占位被移除——真实入口在文件末尾
+    pass
 
 
 # ---------- 确定性数值计算（LLM 只出意图，不出结果） ----------
@@ -245,6 +286,8 @@ def eval_intent(intent: dict) -> dict:
 _CALC_SYSTEM = """你负责把问题中的计算需求转成计算意图 JSON 数组，禁止自己算出结果。
 可用 op：convert{value,from,to} growth{base,now} ratio{part,total} sum{values,unit}。
 单位只允许：元/万元/亿元/%/股。数值直接用资料中已给出的原文数字。
+数组第一个元素对应问题第一问的主数值（如"营业收入是多少"→该营收值本身），growth/ratio 等衍生计算排在后面。
+问题问"增长多少/增速"且资料给出两期数值时，必须输出 growth 意图（base=前期, now=本期）。
 只输出 JSON 数组（每个计算一个对象），无计算需求则输出 []。"""
 
 
@@ -356,7 +399,16 @@ def answer_hybrid(conn, qid: str, question: str, doc_id: str) -> schema.AnswerRe
 
 
 # ---------- 长列表：章节定位 + 整章召回 ----------
-_SEC_START = re.compile(r"第[一二三四五六七八九十百]+节\s*(.+)")
+_SEC_LINE = re.compile(r"^第[一二三四五六七八九十百]+节\s*(\S.{0,19})$")
+
+
+def _sec_heading(text: str) -> str | None:
+    """取 chunk 前 3 行中的节标题行（行首锚定，防正文引用"第四节 风险因素"误触发）。"""
+    for line in text.split("\n")[:3]:
+        m = _SEC_LINE.match(line.strip())
+        if m:
+            return m.group(1).strip().rstrip("… .。")
+    return None
 
 
 def locate_section_chunks(conn, doc_id: str, section_kw: str) -> list[dict]:
@@ -367,15 +419,12 @@ def locate_section_chunks(conn, doc_id: str, section_kw: str) -> list[dict]:
         (doc_id,)).fetchall()
     inside, started = [], False
     for cid, pg, text in allc:
-        m = _SEC_START.search(text[:80])
-        if m:
+        head = _sec_heading(text)
+        if head is not None:
             if started:
                 break  # 下一节开始 → 收束
-            started = section_kw in m.group(1)
-            if started:
-                inside.append({"chunk_id": cid, "doc_id": doc_id,
-                               "pdf_page": pg, "text": text})
-        elif started:
+            started = section_kw in head
+        if started:
             inside.append({"chunk_id": cid, "doc_id": doc_id, "pdf_page": pg, "text": text})
     return inside
 
@@ -413,3 +462,7 @@ items 每项一条（风险因素类带类别前缀如"技术风险-产品迭代
         question_id=qid, answer=f"共 {n} 项", answer_type="list",
         items=items, citations=[schema.Citation(**c) for c in cites],
         route="doc", confidence=0.8 if cites else 0.3, tokens=usage)
+
+
+if __name__ == "__main__":
+    main()
