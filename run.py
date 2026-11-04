@@ -24,6 +24,24 @@ def rrf(*ranked_lists, k: int = 60) -> dict:
 
 
 # ---------- 实体链接 ----------
+_JIEBA_DICT_LOADED = False
+
+
+def _load_company_dict(conn: sqlite3.Connection) -> None:
+    """把 80 家公司别名注入 jieba 词典（未登录公司名会被 HMM 切碎：
+    中海达→中海/达，真兰仪表→真兰/仪表）。成词后链接与 BM25 都受益。"""
+    global _JIEBA_DICT_LOADED
+    if _JIEBA_DICT_LOADED:
+        return
+    for (alias,) in conn.execute("SELECT DISTINCT alias FROM company_registry").fetchall():
+        if len(alias) >= 3:
+            jieba.add_word(alias, freq=10_000_000)
+            core = _alias_core(alias)
+            if len(core) >= 3:
+                jieba.add_word(core, freq=10_000_000)
+    _JIEBA_DICT_LOADED = True
+
+
 def _alias_core(alias: str) -> str:
     """全称去公司后缀 → 核心名（如 湖南国科微电子股份有限公司 → 湖南国科微电子）。"""
     for suf in ("股份有限公司", "有限责任公司", "有限公司", "公司"):
@@ -33,8 +51,12 @@ def _alias_core(alias: str) -> str:
 
 
 def link_company(conn: sqlite3.Connection, question: str) -> str | None:
-    """最长匹配 → doc_id：全称命中或核心名（≥4字）命中均可。匹配不到=知识库外。"""
+    """最长匹配 → doc_id。四级：
+    ① 全称/核心名 ⊆ 问题；② 问题的词组 n-gram ⊆ 别名（简称嵌在全称中间，
+    如 真兰仪表 ⊂ 上海真兰仪表科技股份有限公司——s776 复核教训，需唯一 doc）；
+    ③ ≥3 字词唯一包含（如 中海达）。匹配不到=知识库外。"""
     rows = conn.execute("SELECT alias, doc_id FROM company_registry").fetchall()
+    _load_company_dict(conn)
     best_len, best_doc = 0, None
     for alias, doc_id in rows:
         core = _alias_core(alias)
@@ -45,7 +67,30 @@ def link_company(conn: sqlite3.Connection, question: str) -> str | None:
             hit_len = len(core)
         if hit_len > best_len:
             best_len, best_doc = hit_len, doc_id
-    return best_doc
+    if best_doc:
+        return best_doc
+    words = [w for w in jieba.lcut(question) if len(w) >= 2]
+    grams = []
+    for n in (3, 2):  # 连续 3 词/2 词拼接（≥4 字）
+        grams += ["".join(words[i:i + n]) for i in range(len(words) - n + 1)
+                  if len("".join(words[i:i + n])) >= 4]
+    for g in grams:
+        docs = {d for a, d in rows if g in a}
+        if len(docs) == 1:
+            return docs.pop()
+    for w in words:
+        if len(w) >= 3:
+            hits = {(a, d) for a, d in rows if w in a}
+            if len({d for _, d in hits}) == 1 and len(hits) <= 3:
+                return list(hits)[0][1]
+    # ④ 标点界定的 CJK 短 run（3–8 字）唯一包含：接住 jieba 拆碎的跨词简称
+    #（如「中海达、南方测绘…」里顿号隔出的 中海达 ⊂ 广州中海达卫星导航技术股份有限公司）
+    for run in re.split(r"[^一-鿿]+", question):
+        if 3 <= len(run) <= 8:
+            hits = {(a, d) for a, d in rows if run in a}
+            if len({d for _, d in hits}) == 1 and len(hits) <= 3:
+                return list(hits)[0][1]
+    return None
 
 
 # ---------- 路由（规则优先） ----------
@@ -428,7 +473,9 @@ def build_schema_cards() -> str:
 
 _SQL_SYSTEM = """你是 Text-to-SQL 助手。只输出一条只读 SQLite SELECT 语句，不要任何解释或 markdown。
 字段名自带单位（如 收盘价(元)），带括号/特殊字符的字段名必须用双引号包裹。
-日期字段为 'YYYY-MM-DD 00:00:00' 格式（见各表样例行），按前缀匹配：日期 LIKE 'YYYY-MM-DD%'。
+日期字段格式各表不统一（有的表是 '20191231'，有的是 '2019-03-31 00:00:00'）——
+先看该表样例行的实际格式，用完全相同的格式做等值或前缀 LIKE 匹配。
+枚举字段用完整枚举值（如 行业划分标准 的取值是 '中信行业分类'/'申万行业分类'，不是'申万'）。
 表名/字段名须与 Schema 完全一致。"""
 
 
@@ -467,6 +514,18 @@ def answer_sql(conn, qid: str, question: str, doc_id: str | None) -> schema.Answ
                 usage["output"] += u2["output"]
                 continue
             return refuse(qid, f"SQL 执行失败：{e}", "sql")
+        if not rows and attempt == 0:
+            # 空结果≠正确：常见根因=枚举字段写了不完整值（年报 vs '年报(含半年报)'）
+            # 或日期格式错——喂回空结果让模型自查一轮
+            content, u2 = llm.chat(
+                _SQL_SYSTEM,
+                f"{prompt}\n\n你之前的SQL：{safe_sql}\n执行结果为空。\n"
+                f"自查：①枚举字段是否用了不完整值（等值可放宽为 LIKE 前缀，"
+                f"如 报告类型 LIKE '年报%'）；②日期格式是否与样例行一致；"
+                f"③过滤条件是否过严。只输出一条修正后的SELECT语句")
+            usage["input"] += u2["input"]
+            usage["output"] += u2["output"]
+            continue
         ans = "; ".join("，".join(f"{c}={v}" for c, v in zip(cols, r)) for r in rows[:10])
         return schema.AnswerRecord(question_id=qid, answer=ans or "查询无结果",
                                    answer_type="text", sql=safe_sql, route="sql",
