@@ -356,10 +356,6 @@ def main():
             print(f"[done] {item['question_id']} -> {rec.answer_type}")
 
 
-if __name__ == "__main__" and False:  # 占位被移除——真实入口在文件末尾
-    pass
-
-
 # ---------- 确定性数值计算（LLM 只出意图，不出结果） ----------
 _UNIT_FACTOR = {"元": 1.0, "万元": 1e4, "亿元": 1e8, "%": 1.0, "股": 1.0}
 
@@ -529,7 +525,9 @@ def answer_sql(conn, qid: str, question: str, doc_id: str | None) -> schema.Answ
             usage["input"] += u2["input"]
             usage["output"] += u2["output"]
             continue
-        ans = "; ".join("，".join(f"{c}={v}" for c, v in zip(cols, r)) for r in rows[:10])
+        # 无别名表达式列名=整个SQL文本（s75 教训），超 20 字以「结果」替代
+        ans = "; ".join("，".join(f"{(c if len(c) <= 20 else '结果')}={v}"
+                                  for c, v in zip(cols, r)) for r in rows[:10])
         return schema.AnswerRecord(question_id=qid, answer=ans or "查询无结果",
                                    answer_type="text", sql=safe_sql, route="sql",
                                    confidence=0.7, tokens=usage)
