@@ -2,7 +2,7 @@
 
 - 立项日期：2026-11-04
 - 交付 deadline：2026-11-05
-- 状态：待用户审阅
+- 状态：已交付（2026-11-05）
 - 题目源：`../question1/question.txt` 题目二
 - 仓库：GitHub 公开仓 `alicexl/prospectus-qa`
 
@@ -71,7 +71,7 @@ answers.jsonl + labels.jsonl ──evaluate.py──> 全指标报告
 ## 6. 问答管线（run.py，逐题处理）
 
 1. **实体链接**：知识库公司词典（全称+简称）最长匹配 → doc_id；匹配不到（知识库外公司）→ 直接拒答 `route=none, answer_type=refusal`
-2. **路由**：规则优先（「基金/持仓/行情/份额/规模变动」且能链到比赛库 → sql/hybrid；「招股书/披露/募集/风险因素」→ doc），规则不决 → LLM 分类兜底
+2. **路由**：规则优先（「基金/持仓/行情/份额/规模变动」且能链到比赛库 → sql/hybrid；「招股书/披露/募集/风险因素」→ doc），规则不决 → 按 doc 路处理（实现无 LLM 兜底，见 design.md 已知限制）
 3. **doc 路**：BM25 + 向量余弦 → RRF 融合 top-k → DeepSeek 带 chunk 上下文抽取答案+quote → **quote 程序化逐字校验**（规范化去空白/全半角后 substring 匹配对应页文本；失败换 chunk 重试，仍失败降置信或拒答）
 4. **sql 路**：10 张表 schema 卡片（含单位说明）→ DeepSeek 生成 SQL → sqlglot AST 校验（单语句/SELECT-only/强制 LIMIT）→ `file:...?mode=ro` 只读连接执行
 5. **数值计算**：LLM 输出结构化计算意图（`{op:"growth",a,b}`、`{op:"sum",unit:"万元",values:[...]}` 等），Python 确定性执行元/万元/亿元换算、增长率、比例、合计；LLM 不做心算

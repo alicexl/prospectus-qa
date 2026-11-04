@@ -100,8 +100,8 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 | 列表条目 P/R/F1 | 1.0 / 1.0 / 1.0 |
 | 引用正确率（独立重验） | 1.0 |
 | 拒答 P/R | 1.0 / 1.0 |
-| 延迟 avg / P95 | ~1.6s / ~3.2s |
-| 单题 tokens in/out | ~1790 / ~150 |
+| 延迟 avg / P95 | 1495 / 2768 ms |
+| 单题 tokens in/out | 1899 / 154 |
 
 ## 3. 100 题压测（question.json 前 100 题，s0~s99）
 
@@ -127,7 +127,7 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 97/100 一致，3 处差异：
 
 - s45 三年销售费用：标签 number 但 value.number=None（多值题标签局限），答案内容与标签一致
-- s75 年化收益率：数值正确（86.57=人工裁决）但 SQL 列名污染显示 + SQL 路恒 text 类型
+- s75 年化收益率：数值正确（86.57=人工裁决，无别名表达式列名污染显示已修）仅 SQL 路恒 text 类型与标签 number 不符
 - s92 第 6 大重仓股季度涨跌幅：口径错误（MAX-MIN 29.13 vs 人工裁决 -3.06），标注期已知
 
 ### 抽样压测揪出并已修复的问题

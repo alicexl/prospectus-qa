@@ -3,3 +3,5 @@ pdfplumber
 sqlglot
 pydantic
 openai
+jieba
+numpy

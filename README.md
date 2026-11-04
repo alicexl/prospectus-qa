@@ -5,7 +5,7 @@
 ## 运行环境
 
 - Python 3.12（Anaconda base 即可）
-- 依赖：`pip install -r requirements.txt`（pymupdf / pdfplumber / sqlglot / pydantic / openai）
+- 依赖：`pip install -r requirements.txt`（pymupdf / pdfplumber / sqlglot / pydantic / openai / jieba / numpy）
 - API key：写入仓库根 `.env`（已 gitignore）：
 
 ```
@@ -40,8 +40,8 @@ python -X utf8 ingest.py
 python -X utf8 ingest.py --embed-only
 
 # ③ 问答：逐行输出题目 §4 Schema 的 JSON
-python -X utf8 run.py --input questions/      # selftest.jsonl(8题) + sample100.jsonl(100题压测)
-# questions/selftest.jsonl --output results/answers.jsonl
+python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl        # 8题黄金集
+python -X utf8 run.py --input questions/sample100.jsonl --output results/sample100_answers.jsonl  # 100题压测
 
 # ④ 评估：五组指标 → results/metrics.json
 python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl
@@ -77,10 +77,13 @@ ingest.py     # 入库管线：PyMuPDF文本 + pdfplumber表格(跨页合并) + 
 run.py        # 问答管线：实体链接→路由→doc/sql/hybrid→quote程序化逐字校验→Schema输出
 evaluate.py   # 评估：数值准确率/列表PRF1/引用独立重验/拒答PR/延迟成本
 label.py      # 标注流水线：题型判定→确定性优先→证据分级→人工复核队列（1000题定标）
+label_triage.py # 复核队列消化：JOIN二次SQL交叉验证 / 多问句数字锚点重算
 schema.py     # 题目§4输出Schema（pydantic）
 llm.py        # DeepSeek/智谱 API 封装（key走环境变量/.env）
 labels.jsonl  # 8道自测题人工标注（核对PDF原页）
-results/      # 交付物：answers.jsonl + metrics.json
+labels_full.jsonl # 1000题标注终稿（1000/1000 verified，evaluate直接消费）
+questions/    # 自测输入：selftest.jsonl(8题) + sample100.jsonl(100题压测)
+results/      # 交付物：answers.jsonl + metrics.json + sample100_answers.jsonl
 spec.md       # 需求与设计基线
 design.md     # 设计说明（面向评审）
 ```
