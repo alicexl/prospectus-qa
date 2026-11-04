@@ -40,7 +40,8 @@ python -X utf8 ingest.py
 python -X utf8 ingest.py --embed-only
 
 # ③ 问答：逐行输出题目 §4 Schema 的 JSON
-python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl
+python -X utf8 run.py --input questions/      # selftest.jsonl(8题) + sample30.jsonl(1000题抽样)
+# questions/selftest.jsonl --output results/answers.jsonl
 
 # ④ 评估：五组指标 → results/metrics.json
 python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl
@@ -75,6 +76,7 @@ python -X utf8 -m pytest tests/ -v    # 26 个测试：纯函数单测 + 真实�
 ingest.py     # 入库管线：PyMuPDF文本 + pdfplumber表格(跨页合并) + FTS5(trigram) + 向量
 run.py        # 问答管线：实体链接→路由→doc/sql/hybrid→quote程序化逐字校验→Schema输出
 evaluate.py   # 评估：数值准确率/列表PRF1/引用独立重验/拒答PR/延迟成本
+label.py      # 标注流水线：题型判定→确定性优先→证据分级→人工复核队列（1000题定标）
 schema.py     # 题目§4输出Schema（pydantic）
 llm.py        # DeepSeek/智谱 API 封装（key走环境变量/.env）
 labels.jsonl  # 8道自测题人工标注（核对PDF原页）
