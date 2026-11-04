@@ -48,7 +48,9 @@ def link_company(conn: sqlite3.Connection, question: str) -> str | None:
 
 
 # ---------- 路由（规则优先） ----------
-_SQL_HINT = re.compile(r"基金|持仓|行情|份额|规模变动|持有人结构|日行情|涨跌幅|净值")
+_SQL_HINT = re.compile(r"基金|持仓|行情|份额|规模变动|持有人结构|日行情|涨跌幅|净值"
+                       r"|行业划分|行业分类|一级行业|二级行业|申万|中信"
+                       r"|成交金额|振幅|收盘|开盘|港股|股票代码")
 _DOC_HINT = re.compile(r"招股书|披露|募集|风险因素|发行股数|发行价格|营业收入|主营业务|承诺")
 
 
@@ -213,7 +215,11 @@ def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
     try:
         doc_id = link_company(conn, question)
         if doc_id is None:
-            rec = refuse(qid, "知识库中不存在该公司（80份招股书未覆盖）", "none")
+            # 实体链接失败≠拒答：纯DB题（基金/行情/行业）无文档实体也要走sql路
+            if _SQL_HINT.search(question):
+                rec = answer_sql(conn, qid, question, None)
+            else:
+                rec = refuse(qid, "知识库中不存在该公司（80份招股书未覆盖）", "none")
         else:
             # 长列表题（列出全部X）：走章节全量召回
             if _LIST_HINT.search(question) and ("风险" in question or "全部" in question):
@@ -369,31 +375,59 @@ def build_schema_cards() -> str:
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
         cols = [r[1] for r in ro.execute(f'PRAGMA table_info("{tname}")')]
         n = ro.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
-        cards.append(f"表 {tname}（{n} 行）：{', '.join(cols)}")
+        sample = ro.execute(f'SELECT * FROM "{tname}" LIMIT 1').fetchone()
+        s_txt = "，".join(f"{c}={v}" for c, v in zip(cols, sample))[:150] if sample else ""
+        cards.append(f"表 {tname}（{n} 行）：{', '.join(cols)}\n  样例行：{s_txt}")
     ro.close()
     return "\n".join(cards)
 
 
 _SQL_SYSTEM = """你是 Text-to-SQL 助手。只输出一条只读 SQLite SELECT 语句，不要任何解释或 markdown。
-字段名自带单位（如 收盘价(元)），日期字段按字符串比较（如 '2020-12-31'）。表名/字段名须与 Schema 完全一致。"""
+字段名自带单位（如 收盘价(元)），带括号/特殊字符的字段名必须用双引号包裹。
+日期字段为 'YYYY-MM-DD 00:00:00' 格式（见各表样例行），按前缀匹配：日期 LIKE 'YYYY-MM-DD%'。
+表名/字段名须与 Schema 完全一致。"""
+
+
+def _run_sql(safe_sql: str) -> tuple[list[tuple], list[str]]:
+    ro = competition_ro()
+    try:
+        cur = ro.execute(safe_sql)
+        rows = cur.fetchmany(200)
+        cols = [d[0] for d in cur.description] if cur.description else []
+        return rows, cols
+    finally:
+        ro.close()
 
 
 def answer_sql(conn, qid: str, question: str, doc_id: str | None) -> schema.AnswerRecord:
-    content, usage = llm.chat(_SQL_SYSTEM,
-                              f"Schema：\n{build_schema_cards()}\n\n问题：{question}")
-    sql = content.strip().removeprefix("```sql").removeprefix("```").removesuffix("```").strip()
-    ok, safe_sql = sql_guard(sql)
-    if not ok:
-        return refuse(qid, "生成的 SQL 未通过安全校验，拒答", "sql")
-    ro = competition_ro()
-    cur = ro.execute(safe_sql)
-    rows = cur.fetchmany(200)
-    cols = [d[0] for d in cur.description] if cur.description else []
-    ro.close()
-    ans = "; ".join("，".join(f"{c}={v}" for c, v in zip(cols, r)) for r in rows[:10])
-    return schema.AnswerRecord(question_id=qid, answer=ans or "查询无结果",
-                               answer_type="text", sql=safe_sql, route="sql",
-                               confidence=0.7, tokens=usage)
+    usage = {"input": 0, "output": 0}
+    prompt = f"Schema：\n{build_schema_cards()}\n\n问题：{question}"
+    content, u = llm.chat(_SQL_SYSTEM, prompt)
+    usage = {"input": u["input"], "output": u["output"]}
+    for attempt in range(2):  # 执行错误给一次自纠错重试
+        sql = content.strip().removeprefix("```sql").removeprefix("```").removesuffix("```").strip()
+        parts = [p for p in sql.split(";") if p.strip()]  # 拆多语句只取第一条
+        sql = parts[0].strip() if parts else sql
+        ok, safe_sql = sql_guard(sql)
+        if not ok:
+            return refuse(qid, "生成的 SQL 未通过安全校验，拒答", "sql")
+        try:
+            rows, cols = _run_sql(safe_sql)
+        except sqlite3.Error as e:
+            if attempt == 0:
+                content, u2 = llm.chat(
+                    _SQL_SYSTEM,
+                    f"{prompt}\n\n你之前的SQL：{safe_sql}\n执行报错：{e}\n"
+                    f"请修正（字段名须与Schema完全一致），只输出一条SELECT语句")
+                usage["input"] += u2["input"]
+                usage["output"] += u2["output"]
+                continue
+            return refuse(qid, f"SQL 执行失败：{e}", "sql")
+        ans = "; ".join("，".join(f"{c}={v}" for c, v in zip(cols, r)) for r in rows[:10])
+        return schema.AnswerRecord(question_id=qid, answer=ans or "查询无结果",
+                                   answer_type="text", sql=safe_sql, route="sql",
+                                   confidence=0.7, tokens=usage)
+    return refuse(qid, "SQL 生成失败", "sql")
 
 
 def answer_hybrid(conn, qid: str, question: str, doc_id: str) -> schema.AnswerRecord:

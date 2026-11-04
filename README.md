@@ -9,7 +9,7 @@
 - API key：写入仓库根 `.env`（已 gitignore）：
 
 ```
-DEEPSEEK_API_KEY=sk-xxx          # platform.deepseek.com 生成，用于生成（deepseek-chat）
+DEEPSEEK_API_KEY=sk-xxx          # platform.deepseek.com 生成，用于生成（deepseek-flash，关思考）
 ZHIPU_API_KEY=id.secret          # open.bigmodel.cn 生成，用于向量（embedding-3）
 ```
 
@@ -52,7 +52,7 @@ python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl
 
 | 用途 | 模型 | 说明 |
 |---|---|---|
-| 生成（抽取/判断/Text-to-SQL） | deepseek-chat | DeepSeek 官方 API |
+| 生成（抽取/判断/Text-to-SQL） | deepseek-flash（关思考） | DeepSeek 官方 API，openai 端点 extra_body thinking disabled |
 | 向量检索 | embedding-3 | 智谱 BigModel，2048 维 |
 
 LLM 只在节点内做抽取/判断；**路由、引用逐字校验、单位换算、增长率/比例/合计计算、SQL 安全校验全部为确定性代码**，LLM 零心算。
@@ -64,10 +64,10 @@ LLM 只在节点内做抽取/判断；**路由、引用逐字校验、单位换�
 ## 测试
 
 ```bash
-python -X utf8 -m pytest tests/ -v    # 25 个测试：纯函数单测 + 真实数据集成测试
+python -X utf8 -m pytest tests/ -v    # 26 个测试：纯函数单测 + 真实数据集成测试
 ```
 
-覆盖：印刷页码多格式识别（含 1-1-xx）、doc_id/PDF物理页码/印刷页码三层溯源链落库、表格结构化保留、跨页表格合并、SQL 注入拦截、单位换算/增长率、RRF 融合、quote 逐字校验、评估指标。
+逐项验证与 1000 题抽样压测报告见 **SELFTEST.md**。覆盖：印刷页码多格式识别（含 1-1-xx）、doc_id/PDF物理页码/印刷页码三层溯源链落库、表格结构化保留、跨页表格合并、SQL 注入拦截、单位换算/增长率、RRF 融合、quote 逐字校验、评估指标。
 
 ## 目录说明
 
