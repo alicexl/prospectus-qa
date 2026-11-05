@@ -287,13 +287,15 @@ def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
             if _SQL_HINT.search(question):
                 rec = answer_sql(conn, qid, question, None)
             else:
-                rec = refuse(qid, "知识库中不存在该公司（80份招股书未覆盖）", "none")
+                rec = refuse(qid, "知识库中不存在该公司", "none")
         else:
-            # 长列表题（列出全部X）：走章节全量召回
-            if _LIST_HINT.search(question) and ("风险" in question or "全部" in question):
-                rec = answer_listq(conn, qid, question, doc_id)
-                rec.latency_ms = int((time.time() - t0) * 1000)
-                return rec
+            # 长列表题（列出/有哪些X）：题面点名节标题 或 风险/募集字样 → 章节全量召回
+            if _LIST_HINT.search(question):
+                kw = _section_kw(conn, question, doc_id)
+                if kw or "风险" in question or "募集" in question:
+                    rec = answer_listq(conn, qid, question, doc_id, kw)
+                    rec.latency_ms = int((time.time() - t0) * 1000)
+                    return rec
             r = route(conn, question, doc_id)
             if r == "sql":
                 rec = answer_sql(conn, qid, question, doc_id)
@@ -448,6 +450,7 @@ def build_schema_cards() -> str:
 
 _SQL_SYSTEM = """你是 Text-to-SQL 助手。只输出一条只读 SQLite SELECT 语句，不要任何解释或 markdown。
 字段名自带单位（如 收盘价(元)），带括号/特殊字符的字段名必须用双引号包裹。
+无别名的表达式列必须用 AS 起简短别名（如 AS 结果）——否则列名会变成整条表达式。
 日期字段格式各表不统一（有的表是 '20191231'，有的是 '2019-03-31 00:00:00'）——
 先看该表样例行的实际格式，用完全相同的格式做等值或前缀 LIKE 匹配。
 枚举字段用完整枚举值（如 行业划分标准 的取值是 '中信行业分类'/'申万行业分类'，不是'申万'）。
@@ -559,9 +562,25 @@ def locate_section_chunks(conn, doc_id: str, section_kw: str) -> list[dict]:
 _LIST_HINT = re.compile(r"列出|全部|有哪些|分别有哪些")
 
 
-def answer_listq(conn, qid: str, question: str, doc_id: str) -> schema.AnswerRecord:
-    """「列出全部X」类：章节全量召回 → LLM 按层级结构化 → items+条目数（程序校验计数）。"""
-    kw = "风险因素" if "风险" in question else "募集"
+def _section_kw(conn, question: str, doc_id: str) -> str | None:
+    """「列出X」类题的目标章节名：遍历 doc 全部节标题，标题 ⊆ 题面取最长命中
+    （q6「列出…全部风险因素」→ 风险因素）。"""
+    heads: set[str] = set()
+    for (text,) in conn.execute("SELECT text FROM chunks WHERE doc_id=?", (doc_id,)):
+        h = _sec_heading(text)
+        if h:
+            heads.add(h)
+    return max((h for h in heads if h in question), key=len, default=None)
+
+
+def answer_listq(conn, qid: str, question: str, doc_id: str,
+                 kw: str | None = None) -> schema.AnswerRecord:
+    """「列出全部X」类：章节全量召回 → LLM 按层级结构化 → items+条目数（程序校验计数）。
+    kw=章节名：题面点名的节标题优先，风险/募集字样兜底，均无 → 拒答。"""
+    kw = kw or _section_kw(conn, question, doc_id) or (
+        "风险因素" if "风险" in question else "募集" if "募集" in question else None)
+    if not kw:
+        return refuse(qid, "未能在知识库中定位相关章节内容", "doc")
     secs = locate_section_chunks(conn, doc_id, kw)
     usage = {"input": 0, "output": 0}
     items: list[str] = []

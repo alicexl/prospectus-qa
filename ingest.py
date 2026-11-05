@@ -380,13 +380,9 @@ if __name__ == "__main__":
     init_db(conn)
 
     if args.embed_only:
-        # 自测题相关公司优先（含"东微/国科微"别名的 doc 先补向量），其余按 doc_id 序
-        pri = [r[0] for r in conn.execute(
-            "SELECT DISTINCT doc_id FROM company_registry "
-            "WHERE alias LIKE '%东微%' OR alias LIKE '%国科微%'")]
-        rest = [r[0] for r in conn.execute(
+        docs = [r[0] for r in conn.execute(
             "SELECT DISTINCT doc_id FROM chunks WHERE emb IS NULL ORDER BY doc_id")]
-        for d in [x for x in pri if x in rest] + [x for x in rest if x not in pri]:
+        for d in docs:
             n = conn.execute("SELECT COUNT(*) FROM chunks WHERE doc_id=? AND emb IS NULL",
                              (d,)).fetchone()[0]
             if n == 0:
