@@ -51,10 +51,9 @@ def _alias_core(alias: str) -> str:
 
 
 def link_company(conn: sqlite3.Connection, question: str) -> str | None:
-    """最长匹配 → doc_id。四级：
-    ① 全称/核心名 ⊆ 问题；② 问题的词组 n-gram ⊆ 别名（简称嵌在全称中间，
-    如 真兰仪表 ⊂ 上海真兰仪表科技股份有限公司——s776 复核教训，需唯一 doc）；
-    ③ ≥3 字词唯一包含（如 中海达）。匹配不到=知识库外。"""
+    """最长匹配 → doc_id：全称 / 核心名（去公司后缀）⊆ 问题。匹配不到=知识库外。
+    简称/变体写法靠 company_registry 手动别名（ingest.MANUAL_ALIASES）直配，
+    不做 n-gram 猜测——猜错比拒答更糟（q8「湖南长远锂业」曾误链「湖南长远锂科」）。"""
     rows = conn.execute("SELECT alias, doc_id FROM company_registry").fetchall()
     _load_company_dict(conn)
     best_len, best_doc = 0, None
@@ -67,34 +66,7 @@ def link_company(conn: sqlite3.Connection, question: str) -> str | None:
             hit_len = len(core)
         if hit_len > best_len:
             best_len, best_doc = hit_len, doc_id
-    if best_doc:
-        return best_doc
-    # 题面含完整公司名形态（股份/有限责任）→ 只信①级全称精确匹配，不中即库外。
-    # ②③④级是为简称设计的救济，会把「湖南长远锂业」n-gram 误链到「湖南长远锂科」（q8 复现教训）
-    if ("股份" in question and "有限" in question) or "有限责任" in question:
-        return None
-    words = [w for w in jieba.lcut(question) if len(w) >= 2]
-    grams = []
-    for n in (3, 2):  # 连续 3 词/2 词拼接（≥4 字）
-        grams += ["".join(words[i:i + n]) for i in range(len(words) - n + 1)
-                  if len("".join(words[i:i + n])) >= 4]
-    for g in grams:
-        docs = {d for a, d in rows if g in a}
-        if len(docs) == 1:
-            return docs.pop()
-    for w in words:
-        if len(w) >= 3:
-            hits = {(a, d) for a, d in rows if w in a}
-            if len({d for _, d in hits}) == 1 and len(hits) <= 3:
-                return list(hits)[0][1]
-    # ④ 标点界定的 CJK 短 run（3–8 字）唯一包含：接住 jieba 拆碎的跨词简称
-    #（如「中海达、南方测绘…」里顿号隔出的 中海达 ⊂ 广州中海达卫星导航技术股份有限公司）
-    for run in re.split(r"[^一-鿿]+", question):
-        if 3 <= len(run) <= 8:
-            hits = {(a, d) for a, d in rows if run in a}
-            if len({d for _, d in hits}) == 1 and len(hits) <= 3:
-                return list(hits)[0][1]
-    return None
+    return best_doc
 
 
 # ---------- 路由（规则优先） ----------

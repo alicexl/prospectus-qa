@@ -274,6 +274,16 @@ def upsert_doc(conn, doc_id, company_name, stock_code, doc_type, page_count):
                  (doc_id, company_name, stock_code, doc_type, page_count))
 
 
+# ---------- 手动别名（题面口径与注册名不一致 / 常用简称，供①级精确匹配直配） ----------
+MANUAL_ALIASES: dict[str, list[str]] = {
+    "海看网络科技": ["山东海看网络科技"],   # 注册名=海看网络科技（山东），题面=山东海看网络科技
+    "中海达": ["中海达"],                   # 注册名=广州中海达卫星导航技术
+    "真兰仪表": ["真兰仪表"],               # 注册名=上海真兰仪表科技
+    "国科微电子": ["国科微电子"],           # 注册名=湖南国科微电子
+    "旷达汽车织物": ["旷达汽车织物集团"],   # 注册名=江苏旷达汽车织物集团
+}
+
+
 # ---------- 单文档入库 ----------
 def _write_doc(conn: sqlite3.Connection, parsed: dict) -> str:
     """写入单份解析结果。幂等：完整入库（docs+chunks 齐全）才跳过；残缺先清理重灌。
@@ -319,6 +329,11 @@ def _write_doc(conn: sqlite3.Connection, parsed: dict) -> str:
         if a:
             conn.execute("INSERT OR REPLACE INTO company_registry VALUES (?,?,?)",
                          (a, doc_id, parsed["stock_code"]))
+    for key, extras in MANUAL_ALIASES.items():
+        if key in (parsed["company_name"] or ""):
+            for a in extras:
+                conn.execute("INSERT OR REPLACE INTO company_registry VALUES (?,?,?)",
+                             (a, doc_id, parsed["stock_code"]))
     conn.commit()
     print(f"[ok] {doc_id} 公司={parsed['company_name']} 页数={len(parsed['pages'])} "
           f"表格={len(merged_tables)} chunks={len(chunks)}", flush=True)

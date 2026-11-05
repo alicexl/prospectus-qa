@@ -74,7 +74,7 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 |---|---|---|
 | 路由 doc/sql/hybrid/none | 100 题压测：`python -X utf8 -c "import json;from collections import Counter;print(Counter(json.loads(l)['route'] for l in open('results/sample100_answers.jsonl',encoding='utf-8')))"` | sql=60 / doc=40 / none=0 |
 | SQL 只读 + 安全校验 | `python -X utf8 -m pytest tests/test_sqlguard.py -v` | PASSED（DELETE/DROP/UPDATE/多语句/ATTACH/PRAGMA/INSERT 全拦截；SELECT 自动强制 LIMIT）+ `mode=ro` 只读连接双保险 |
-| 实体链接（自建对照表） | `python -X utf8 -c "from ingest import get_conn; print(get_conn().execute('SELECT COUNT(*) FROM company_registry').fetchone()[0])"` | 239 别名（全称+简称），桥梁=招股书封面公司名 ↔ 行情表名称列（IPO 招股书无股票代码，实测封面全称在第 1-16 页） |
+| 实体链接（自建对照表） | `python -X utf8 -c "from ingest import get_conn; print(get_conn().execute('SELECT COUNT(*) FROM company_registry').fetchone()[0])"` | 244 别名（全称+简称+5 组手动别名），桥梁=招股书封面公司名 ↔ 行情表名称列（IPO 招股书无股票代码，实测封面全称在第 1-16 页） |
 | Text-to-SQL 鲁棒性 | 100 题中 sql 路 60 题 | 执行错误自纠错重试 1 次 + 样例行提示（日期 `'YYYY-MM-DD 00:00:00'` 格式假零已修复：s483 → 2262）；带括号列名双引号包裹 |
 
 ### P1-2 数值计算与单位换算（确定性工具，LLM 零心算）
@@ -117,16 +117,16 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 | 指标 | 结果 |
 |---|---|
 | Schema 合规 | 100/100 |
-| 引用逐字重验 | 106/106 |
-| 答案类型分布 | text=80 / list=14 / number=6 / refusal=0 |
+| 引用逐字重验 | 105/105 |
+| 答案类型分布 | text=81 / list=13 / number=6 / refusal=0 |
 | 路由分布 | sql=60 / doc=40 / none=0（与标签 qtype 100% 一致） |
 | 拒答 | 0 条（标签 expect_refusal 亦为 0） |
-| 延迟 avg / P95 | 6272 / 25459 ms（中位数 2589；SQL 大表 JOIN 慢题拉高尾部） |
-| 平均 in_tokens | 2112 |
+| 延迟 avg / P95 | 6424 / 5662 ms（中位数 2194；SQL 大表 JOIN 慢题拉高均值） |
+| 平均 in_tokens | 2104 |
 
-与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 96/100 一致，4 处差异：
+与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 97/100 一致，3 处差异：
 
-- s67/s97：text↔list 类型口径波动（doc 路 answer_type 由 LLM 输出，两次运行间波动，答案内容与标签一致）
+- s97：text↔list 类型口径波动（doc 路 answer_type 由 LLM 输出，两次运行间波动，答案内容与标签一致）
 - s75 年化收益率：数值正确（86.57=人工裁决，无别名表达式列名污染显示已修）仅 SQL 路恒 text 类型与标签 number 不符
 - s92 第 6 大重仓股季度涨跌幅：口径错误（MAX-MIN 29.13 vs 人工裁决 -3.06），标注期已知
 
