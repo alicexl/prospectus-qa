@@ -22,7 +22,7 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 | 表格结构化保留（行列 JSON） | `python -X utf8 -m pytest tests/test_tables_real.py -v` | PASSED（随机 200 表块全为二维结构，≥2行2列 占比 >80%） |
 | 跨页表格合并 | 同上 `test_cross_page_merge_on_real_pdf` | PASSED（真实 PDF 相邻页同表头对 → 合并 + 表头去重 + 数据行并集断言） |
 | doc_id + PDF 物理页码 + 印刷页码（含 `1-1-xx`） | `python -X utf8 -m pytest tests/test_pipeline_pages.py -v` | PASSED（doc_id=哈希文件名、物理页码 1..N 连续、印刷页码识别率 ≥90% 且随物理页单调） |
-| 印刷页码识别率 | `python -X utf8 -c "from ingest import get_conn; print(get_conn().execute('SELECT ROUND(100.0*SUM(printed_page IS NOT NULL)/COUNT(*),1) FROM pages').fetchone()[0])"` | **87.3%**（未识别集中在无页码扉页/封底，已有全文档一致性修复兜底） |
+| 印刷页码识别率 | `python -X utf8 -c "from ingest import get_conn; print(get_conn().execute('SELECT ROUND(100.0*SUM(printed_page IS NOT NULL)/COUNT(*),1) FROM pages').fetchone()[0])"` | **87.2%**（未识别集中在无页码扉页/封底，已有全文档一致性修复兜底） |
 
 实据样例（东微 doc）：`pdf_page=3 → printed_page=1-1-2`；p29 募投表 8行×4列 JSON 含 `合计|93,869.10|100.00%`。
 
@@ -74,7 +74,7 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 |---|---|---|
 | 路由 doc/sql/hybrid/none | 100 题压测：`python -X utf8 -c "import json;from collections import Counter;print(Counter(json.loads(l)['route'] for l in open('results/sample100_answers.jsonl',encoding='utf-8')))"` | sql=60 / doc=40 / none=0 |
 | SQL 只读 + 安全校验 | `python -X utf8 -m pytest tests/test_sqlguard.py -v` | PASSED（DELETE/DROP/UPDATE/多语句/ATTACH/PRAGMA/INSERT 全拦截；SELECT 自动强制 LIMIT）+ `mode=ro` 只读连接双保险 |
-| 实体链接（自建对照表） | `python -X utf8 -c "from ingest import get_conn; print(get_conn().execute('SELECT COUNT(*) FROM company_registry').fetchone()[0])"` | 236 别名（全称+简称），桥梁=招股书封面公司名 ↔ 行情表名称列（IPO 招股书无股票代码，实测封面全称在第 1~16 页） |
+| 实体链接（自建对照表） | `python -X utf8 -c "from ingest import get_conn; print(get_conn().execute('SELECT COUNT(*) FROM company_registry').fetchone()[0])"` | 239 别名（全称+简称），桥梁=招股书封面公司名 ↔ 行情表名称列（IPO 招股书无股票代码，实测封面全称在第 1~16 页） |
 | Text-to-SQL 鲁棒性 | 100 题中 sql 路 60 题 | 执行错误自纠错重试 1 次 + 样例行提示（日期 `'YYYY-MM-DD 00:00:00'` 格式假零已修复：s483 → 2262）；带括号列名双引号包裹 |
 
 ### P1-2 数值计算与单位换算（确定性工具，LLM 零心算）
@@ -84,7 +84,7 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 
 ### P1-3 长列表完整性
 
-复验：q6（列出全部风险因素按类别）→ `items` 22 项（类别前缀「技术风险-…」）+ 22 条引用覆盖整章 p37-46；条目数=items 长度程序校验；章节定位=行首锚定节标题（防正文引用字样误触发）+ 整章全量召回（非 top-k）。
+复验：q6（列出全部风险因素按类别）→ `items` 22 项（类别前缀「技术风险-…」）+ 22 条引用覆盖整章（印刷页 1-1-36 ~ 1-1-45，即物理页 p37-46）；条目数=items 长度程序校验；章节定位=行首锚定节标题（防正文引用字样误触发）+ 整章全量召回（非 top-k）。
 
 ### P1-4 歧义与多口径
 
@@ -129,17 +129,6 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 - s67/s97：text↔list 类型口径波动（doc 路 answer_type 由 LLM 输出，两次运行间波动，答案内容与标签一致）
 - s75 年化收益率：数值正确（86.57=人工裁决，无别名表达式列名污染显示已修）仅 SQL 路恒 text 类型与标签 number 不符
 - s92 第 6 大重仓股季度涨跌幅：口径错误（MAX-MIN 29.13 vs 人工裁决 -3.06），标注期已知
-
-### 抽样压测揪出并已修复的问题
-
-1. **实体链接失败短路误杀 DB 题**：`answer_one` 里公司匹配不到直接拒答，纯 DB 题（基金/行情/行业）没机会走 sql 路 → 改为先探 SQL hint 再决
-2. **路由关键词缺口**：行业分类/成交金额/振幅/港股/股票代码等不在 hint → 补充
-3. **SQL 鲁棒性**：多语句/幻觉列名直接崩「处理失败」→ 拆分号取首条 + 执行错误带报错自纠错重试 1 次 + 失败优雅拒答
-4. **日期格式假零**：库里日期是 `'2021-03-31 00:00:00'`，LLM 等值匹配静默得 COUNT=0 → schema 卡片附样例行 + prompt 明示前缀 LIKE
-5. **flash 关思考**（openai 端点 extra_body）+ LLM 吐带逗号字符串数字强转（`_num`）
-6. **检索未命中型误拒**（s922 海外项目金额 / s350 主营业务 / s770 推广阶段产品）：分词 token 低于 FTS5 trigram 3 字下限（海外/项目/金额全是 2 字词，query 退化成「人民币」）+ 年份 token 把财务表格片顶上来 → 最终方案＝**吸收 ragbot 的 scope-then-score**：doc 圈定后内存手写 Okapi BM25（jieba 词级、doc 内 IDF、token 进程缓存 2.2s→0.33s），弃全库 FTS 扫描（trigram OR 全库打分慢一个数量级）；k 8→10
-7. **openai SDK 默认超时 600s + 静默重试**：连接悬挂吊死整题 10 分钟 → 显式 timeout=60s + max_retries=0，自管重试兜底（限流 429 退避 10~60s 并读 retry-after 头——s63/65/69 五连败教训；其他异常 1~16s 快恢复；单题最坏约 3 分钟后优雅拒答）
-8. **完整公司名误走简称救济**（README 全流程复现揪出）：题面含「股份有限公司」形态时 n-gram 子片段把「湖南长远锂业」误链到库内「湖南长远锂科」（q8 黄金集从正确拒答变误答）→ 修复=完整名形态只信①级全称精确匹配，不中即库外；简称救济（②③④级）仅用于题面为简称时
 
 ### 已知限制（如实披露）
 
