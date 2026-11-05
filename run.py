@@ -84,10 +84,15 @@ _SQL_HINT = re.compile("|".join(_SQL_WORDS))
 _DOC_HINT = re.compile("|".join(_DOC_WORDS))
 
 
+# hybrid 触发：DB 词命中且题面另有文档语境（文档词或年份）。
+# 多问句题「2016年营收多少？基金持仓多少？」doc 与 DB 两者都要查。
+_YEAR_RE = re.compile(r"20\d\d")
+
+
 def route(conn: sqlite3.Connection, question: str, doc_id: str | None) -> str:
     if doc_id is None:
         return "sql" if _SQL_HINT.search(question) else "none"
-    if _SQL_HINT.search(question) and (_DOC_HINT.search(question) or re.search(r"20\d\d", question)):
+    if _SQL_HINT.search(question) and (_DOC_HINT.search(question) or _YEAR_RE.search(question)):
         return "hybrid"
     return "doc"
 
@@ -296,10 +301,10 @@ def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
             # 纯 DB 题：实体链接失败但 DB 领域词命中（无文档实体）
             rec = answer_sql(conn, qid, question, doc_id)
         else:
-            # 长列表题（列出/有哪些X）：题面点名节标题 或 风险/募集字样 → 章节全量召回
+            # 长列表题（列出/有哪些X）：题面点名节标题 或 兜底章节关键词 → 章节全量召回
             if r == "doc" and _LIST_HINT.search(question):
-                kw = _section_kw(conn, question, doc_id)
-                if kw or "风险" in question or "募集" in question:
+                kw = _section_kw(conn, question, doc_id) or _fallback_kw(question)
+                if kw:
                     rec = answer_listq(conn, qid, question, doc_id, kw)
                     rec.latency_ms = int((time.time() - t0) * 1000)
                     return rec
@@ -563,6 +568,15 @@ def locate_section_chunks(conn, doc_id: str, section_kw: str) -> list[dict]:
 
 _LIST_HINT = re.compile(r"列出|全部|有哪些|分别有哪些")
 
+# 长列表路兜底章节：招股书两大列表章节（风险因素/募投项目），条目多、跨多页、
+# top-k 检索必漏——题面提及章节关键词即整章召回。发现新的长列表章节题型时补词。
+_LIST_FALLBACK = (("风险", "风险因素"), ("募集", "募集"))
+
+
+def _fallback_kw(question: str) -> str | None:
+    """题面提及兜底章节关键词 → 对应章节名，否则 None。"""
+    return next((sec for key, sec in _LIST_FALLBACK if key in question), None)
+
 
 def _section_kw(conn, question: str, doc_id: str) -> str | None:
     """「列出X」类题的目标章节名：遍历 doc 全部节标题，标题 ⊆ 题面取最长命中
@@ -578,9 +592,8 @@ def _section_kw(conn, question: str, doc_id: str) -> str | None:
 def answer_listq(conn, qid: str, question: str, doc_id: str,
                  kw: str | None = None) -> schema.AnswerRecord:
     """「列出全部X」类：章节全量召回 → LLM 按层级结构化 → items+条目数（程序校验计数）。
-    kw=章节名：题面点名的节标题优先，风险/募集字样兜底，均无 → 拒答。"""
-    kw = kw or _section_kw(conn, question, doc_id) or (
-        "风险因素" if "风险" in question else "募集" if "募集" in question else None)
+    kw=章节名：题面点名的节标题优先，兜底章节表（_LIST_FALLBACK）次之，均无 → 拒答。"""
+    kw = kw or _section_kw(conn, question, doc_id) or _fallback_kw(question)
     if not kw:
         return refuse(qid, "未能在知识库中定位相关章节内容", "doc")
     secs = locate_section_chunks(conn, doc_id, kw)
