@@ -4,6 +4,8 @@
 
 ## 环境准备（一次性）
 
+> 以下命令均在**仓库根目录**执行（`git clone` 会把数据集放进仓库根 `data/`）。
+
 ```bash
 # ① Python 3.12（Anaconda base 即可），1 分钟
 python --version          # 应为 3.12.x
@@ -32,7 +34,7 @@ data/
 
 ## 复现步骤（约 35 分钟，不含数据集下载）
 
-> `-X utf8` 为 Windows 中文控制台防乱码，Linux/macOS 可用裸 `python`。
+> 以下命令同样在仓库根目录执行；`-X utf8` 为 Windows 中文控制台防乱码，Linux/macOS 可用裸 `python`。
 > 实测时间：11-05 从零全新库复现，6 进程解析 + 8 线程 embedding。
 
 | 步骤 | 命令 | 预估时间 |
