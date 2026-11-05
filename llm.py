@@ -34,9 +34,27 @@ def _zhipu() -> OpenAI:
                   timeout=60.0, max_retries=0)
 
 
+def _retry_wait(i: int, rate_limited: bool, retry_after: int | None) -> float:
+    """限流：退避 10,20,40,60,60s（服务端限流窗常约 1 分钟，原 2**i 上限 16s
+    五连败全撞窗——s63/65/69 教训）；其他异常：1,2,4,8,16s 快恢复。"""
+    if rate_limited:
+        return min(max(10 * 2 ** i, retry_after or 0), 60.0)
+    return 2 ** i
+
+
+def _retry_after(e) -> int | None:
+    """429 响应里的 Retry-After 头（秒），取不到返回 None。"""
+    try:
+        v = e.response.headers.get("Retry-After")
+        return int(v) if v and v.isdigit() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def chat(system: str, user: str, model: str = "deepseek-flash",
          temperature: float = 0.0, retries: int = 5) -> tuple[str, dict]:
-    """返回 (content, usage{input,output})。指数退避重试。
+    """返回 (content, usage{input,output})。限流与普通异常分流退避重试
+    （最坏约 3 分钟，与 README「单题最坏 3 分钟后优雅拒答」口径一致）。
     flash 默认带思考（completion 里灌 ~100 tok 思考内容），openai 端点用
     extra_body thinking disabled 关闭（ragbot anthropic 端点同款语义）。"""
     last_err = None
@@ -49,9 +67,12 @@ def chat(system: str, user: str, model: str = "deepseek-flash",
                           {"role": "user", "content": user}], **extra)
             u = resp.usage
             return resp.choices[0].message.content, {"input": u.prompt_tokens, "output": u.completion_tokens}
-        except Exception as e:  # noqa: BLE001 限流/网络退避重试
+        except openai.RateLimitError as e:  # 429：限流窗比常规退避长
             last_err = e
-            time.sleep(2 ** i)
+            time.sleep(_retry_wait(i, True, _retry_after(e)))
+        except Exception as e:  # noqa: BLE001 网络/5xx 快恢复重试
+            last_err = e
+            time.sleep(_retry_wait(i, False, None))
     raise RuntimeError(f"chat failed after {retries} retries") from last_err
 
 

@@ -57,7 +57,7 @@ answers.jsonl + labels.jsonl ──evaluate.py──> 五组指标（引用独�
 
 ## 4. 测试
 
-26 个测试 = 纯函数单测（页码多格式/跨页合并判定/SQL 注入拦截/单位换算与字符串数字/RRF/quote 校验/评估指标）+ 真实数据集成测试（三层溯源链落库、表格结构化保留、跨页表合并对真实 PDF 验证）。100 题压测见 SELFTEST.md §3。`python -X utf8 -m pytest tests/ -v`
+29 个测试 = 纯函数单测（页码多格式/跨页合并判定/SQL 注入拦截/单位换算与字符串数字/RRF/quote 校验/评估指标/限流退避）+ 真实数据集成测试（三层溯源链落库、表格结构化保留、跨页表合并对真实 PDF 验证）。100 题压测见 SELFTEST.md §3。`python -X utf8 -m pytest tests/ -v`
 
 ## 5. 已知限制
 

@@ -6,7 +6,7 @@
 ## 0. 一键复验入口
 
 ```bash
-python -X utf8 -m pytest tests/ -v                                          # 26 个测试（含真实数据集成）
+python -X utf8 -m pytest tests/ -v                                          # 29 个测试（含真实数据集成）
 python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl      # 8 道官方自测题
 python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl           # 五组指标
 python -X utf8 run.py --input questions/sample100.jsonl --output results/sample100_answers.jsonl   # 100题压测
@@ -138,7 +138,7 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 4. **日期格式假零**：库里日期是 `'2021-03-31 00:00:00'`，LLM 等值匹配静默得 COUNT=0 → schema 卡片附样例行 + prompt 明示前缀 LIKE
 5. **flash 关思考**（openai 端点 extra_body）+ LLM 吐带逗号字符串数字强转（`_num`）
 6. **检索未命中型误拒**（s922 海外项目金额 / s350 主营业务 / s770 推广阶段产品）：分词 token 低于 FTS5 trigram 3 字下限（海外/项目/金额全是 2 字词，query 退化成「人民币」）+ 年份 token 把财务表格片顶上来 → 最终方案＝**吸收 ragbot 的 scope-then-score**：doc 圈定后内存手写 Okapi BM25（jieba 词级、doc 内 IDF、token 进程缓存 2.2s→0.33s），弃全库 FTS 扫描（trigram OR 全库打分慢一个数量级）；k 8→10
-7. **openai SDK 默认超时 600s + 静默重试**：连接悬挂吊死整题 10 分钟 → 显式 timeout=60s + max_retries=0，自管重试兜底（单题最坏 3 分钟后优雅拒答）
+7. **openai SDK 默认超时 600s + 静默重试**：连接悬挂吊死整题 10 分钟 → 显式 timeout=60s + max_retries=0，自管重试兜底（限流 429 退避 10~60s 并读 retry-after 头——s63/65/69 五连败教训；其他异常 1~16s 快恢复；单题最坏约 3 分钟后优雅拒答）
 8. **完整公司名误走简称救济**（README 全流程复现揪出）：题面含「股份有限公司」形态时 n-gram 子片段把「湖南长远锂业」误链到库内「湖南长远锂科」（q8 黄金集从正确拒答变误答）→ 修复=完整名形态只信①级全称精确匹配，不中即库外；简称救济（②③④级）仅用于题面为简称时
 
 ### 已知限制（如实披露）
