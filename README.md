@@ -2,21 +2,21 @@
 
 基于 2023 博金大模型挑战赛数据集（80 份招股书 PDF + 1.46GB SQLite 结构化库）构建的可溯源问答系统：**每个答案附引用（doc_id / PDF 物理页码 / 印刷页码 / 逐字原文片段，程序化校验），知识库外与未披露信息明确拒答**。
 
-## 运行环境
-
-- Python 3.12（Anaconda base 即可）
-- 依赖：`pip install -r requirements.txt`（pymupdf / pdfplumber / sqlglot / pydantic / openai / jieba / numpy）
-- API key：写入仓库根 `.env`（已 gitignore）：
-
-```
-DEEPSEEK_API_KEY=sk-xxx          # platform.deepseek.com 生成，用于生成（deepseek-flash，关思考）
-ZHIPU_API_KEY=id.secret          # open.bigmodel.cn 生成，用于向量（embedding-3）
-```
-
-## 数据集下载（~2GB，Apache-2.0）
+## 环境准备（一次性）
 
 ```bash
-# 放到仓库根 data/ 下（data/ 已 gitignore，不入库）
+# ① Python 3.12（Anaconda base 即可），1 分钟
+python --version          # 应为 3.12.x
+
+# ② API key：写入仓库根 .env（已 gitignore），约 5-15 分钟（含两个平台注册）
+#    DEEPSEEK_API_KEY=sk-xxx          # platform.deepseek.com 生成，用于生成（deepseek-flash，关思考）
+#    ZHIPU_API_KEY=id.secret          # open.bigmodel.cn 生成，用于向量（embedding-3）
+#    手写两行存为 .env 即可，key 走环境变量兜底
+
+# ③ 依赖（pymupdf / pdfplumber / sqlglot / pydantic / openai / jieba / numpy），约 1-5 分钟
+pip install -r requirements.txt
+
+# ④ 数据集（~2GB，Apache-2.0），约 10-60 分钟视网速：clone 到仓库根 data/（已 gitignore，不入库）
 git clone --depth 1 https://www.modelscope.cn/datasets/BJQW14B/bs_challenge_financial_14b_dataset.git data
 ```
 
@@ -30,20 +30,32 @@ data/
 └── question.json         # 原比赛 1000 题（无答案）
 ```
 
-## 复现步骤
+## 复现步骤（约 35 分钟，不含数据集下载）
+
+> `-X utf8` 为 Windows 中文控制台防乱码，Linux/macOS 可用裸 `python`。
+> 实测时间：11-05 从零全新库复现，6 进程解析 + 8 线程 embedding。
+
+| 步骤 | 命令 | 预估时间 |
+|---|---|---|
+| ① 入库 | `python -X utf8 ingest.py` | 约 20 分钟（实测 18m35s） |
+| ② embedding | `python -X utf8 ingest.py --embed-only` | 约 15 分钟（实测 14m59s） |
+| ③ 问答 8 题 | `python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl` | 约 20 秒 |
+| ④ 评估 | `python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl` | 数秒 |
+| （可选）测试 | `python -X utf8 -m pytest tests/ -v` | 约 1 分钟 |
+| （可选）100 题压测 | `python -X utf8 run.py --input questions/sample100.jsonl --output results/sample100_answers.jsonl` | 约 5-15 分钟 |
 
 ```bash
-# ① 入库：解析 80 份 PDF → data/knowledge.db（多进程解析，幂等断点续跑，约 30-60 分钟）
+# ① 入库：解析 80 份 PDF → data/knowledge.db（6 进程，幂等断点续跑；成功标志：结尾 [progress] 80/80）
 python -X utf8 ingest.py
 
-# ② 补 embedding：为全部 chunk 计算向量（智谱 embedding-3，约 20-40 分钟）
+# ② 补 embedding：13.5 万 chunks 调智谱 embedding-3，2048 维 float32 存 SQLite blob
+#    （8 线程 HTTP 密集；幂等，中断后重跑只补缺向量的 chunk）
 python -X utf8 ingest.py --embed-only
 
-# ③ 问答：逐行输出题目 §4 Schema 的 JSON
-python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl        # 8题黄金集
-python -X utf8 run.py --input questions/sample100.jsonl --output results/sample100_answers.jsonl  # 100题压测
+# ③ 问答：逐行输出题目 §4 Schema 的 JSON（8 题黄金集；100 题压测命令见表）
+python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl
 
-# ④ 评估：五组指标 → results/metrics.json
+# ④ 评估：五组指标 → results/metrics.json（数值/列表/引用/拒答全 1.0）
 python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl
 ```
 
