@@ -52,7 +52,7 @@ print(f'{ok}/{tot}')"
 
 ### P0-4 拒答：库外公司与未披露信息
 
-复验：`grep 拒答 results/answers.jsonl`（或 evaluate 的拒答 P/R）。当前：q1/q2/q8 库外公司拒答（80 份未覆盖）、q5 未披露拒答（原文即「每股发行价格、人民币【】元」）——**拒答 P/R = 1.0/1.0**。
+复验：`grep 拒答 results/answers.jsonl`（或 evaluate 的拒答 P/R）。当前：q1/q2/q8 库外公司拒答（不在 80 份招股书内）、q5 未披露拒答（原文即「每股发行价格、人民币【】元」）——**拒答 P/R = 1.0/1.0**。
 
 ### P0-5 结构化输出：题目 §4 JSON Schema
 
@@ -84,7 +84,7 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 
 ### P1-3 长列表完整性
 
-复验：q6（列出全部风险因素按类别）→ `items` 22 项（类别前缀「技术风险-…」）+ 22 条引用覆盖整章（印刷页 1-1-36 ~ 1-1-45，即物理页 p37-46）；条目数=items 长度程序校验；章节定位=行首锚定节标题（防正文引用字样误触发）+ 整章全量召回（非 top-k）。
+复验：q6（列出全部风险因素按类别）→ `items` 22 项（类别前缀「技术风险-…」）+ 22 条引用覆盖整章（印刷页 1-1-36 ~ 1-1-45，即物理页 p37-46）；条目数=items 长度程序校验；章节定位=题面点名节标题（遍历文档节标题 ⊆ 题面取最长）+ 行首锚定（防正文引用字样误触发）+ 整章全量召回（非 top-k）。
 
 ### P1-4 歧义与多口径
 
@@ -100,8 +100,8 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 | 列表条目 P/R/F1 | 1.0 / 1.0 / 1.0 |
 | 引用正确率（独立重验） | 1.0 |
 | 拒答 P/R | 1.0 / 1.0 |
-| 延迟 avg / P95 | 1981 / 3996 ms |
-| 单题 tokens in/out | 1899 / 159 |
+| 延迟 avg / P95 | 1697 / 2940 ms |
+| 单题 tokens in/out | 1899 / 157 |
 
 ## 3. 100 题压测（question.json 前 100 题，s0~s99）
 
@@ -132,5 +132,5 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 ### 已知限制（如实披露）
 
 - 100 题标签由确定性流水线 + 交叉验证 + 人工裁决产出，与管线同源——一致性对照反映稳定性而非独立正确性
-- 引用正确率评估把 SQL 路零引用答案（s75/s92）按失败计（evaluate 公式要求非拒答须有 citations），实际引用 106/106 逐字全过
+- 引用正确率评估把 SQL 路零引用答案（s75/s92）按失败计（evaluate 公式要求非拒答须有 citations），实际引用 104/104 逐字全过
 - sql 路复杂多表 join 题（如 s92 季度涨跌幅口径）依赖 LLM 生成质量，错误时由自纠错/拒答兜底
