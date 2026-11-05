@@ -84,7 +84,7 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 
 ### P1-3 长列表完整性
 
-复验：q6（列出全部风险因素按类别）→ `items` 22 项（类别前缀「技术风险-…」）+ 22 条引用覆盖整章（印刷页 1-1-36 ~ 1-1-45，即物理页 p37-46）；条目数=items 长度程序校验；章节定位=题面点名节标题（遍历文档节标题 ⊆ 题面取最长）+ 行首锚定（防正文引用字样误触发）+ 整章全量召回（非 top-k）。
+复验：q6（列出全部风险因素按类别）→ `items` 22 项（类别前缀「技术风险-…」）+ 22 条引用覆盖整章（印刷页 1-1-36 至 1-1-45，即物理页 p37-46）；条目数=items 长度程序校验；章节定位=题面点名节标题（遍历文档节标题 ⊆ 题面取最长）+ 行首锚定（防正文引用字样误触发）+ 整章全量召回（非 top-k）。
 
 ### P1-4 歧义与多口径
 
@@ -103,7 +103,7 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 | 延迟 avg / P95 | 1847 / 3482 ms |
 | 单题 tokens in/out | 1899 / 159 |
 
-## 3. 100 题压测（question.json 前 100 题，s0~s99）
+## 3. 100 题压测（question.json 前 100 题，s0-s99）
 
 抽样与重跑：
 
@@ -124,7 +124,7 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 | 延迟 avg / P95 | 5069 / 5676 ms（中位数 2565） |
 | 平均 in_tokens | 2157 |
 
-与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 95~98/100（doc 路类型判定由 LLM 输出，多次压测在 95-98 间波动；本次 95/100）。稳定差异 2 处：
+与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 95-98/100（doc 路类型判定由 LLM 输出，多次压测在 95-98 间波动；本次 95/100）。稳定差异 2 处：
 
 - s75 年化收益率：数值正确（86.57=人工裁决，无别名表达式列名污染显示已修）仅 SQL 路恒 text 类型与标签 number 不符
 - s92 第 6 大重仓股季度涨跌幅：口径错误（MAX-MIN 29.13 vs 人工裁决 -3.06），标注期已知

@@ -101,7 +101,7 @@ pydantic §4 Schema 校验 → 逐行写 answers.jsonl（单题异常 → refusa
 | `docs` | doc_id(PK, =PDF哈希文件名), company_name, stock_code, doc_type, page_count | 封面抽取公司全称+股票代码 |
 | `pages` | doc_id, pdf_page, printed_page, text | 印刷页码多 pattern 识别（含 `1-1-xx`），识别不到为 null |
 | `blocks` | doc_id, pdf_page, block_id, type, text, table_json | 表格结构化落位（行列 JSON），跨页合并后以起始页溯源 |
-| `chunks` | chunk_id, doc_id, pdf_page, text, emb(blob) + FTS5 虚表(trigram) | 检索单元：标题感知 ~500 字文本片；表格整表/超长拆片 |
+| `chunks` | chunk_id, doc_id, pdf_page, text, emb(blob) + FTS5 虚表(trigram) | 检索单元：标题感知约 500 字文本片；表格整表/超长拆片 |
 | `company_registry` | alias, doc_id, stock_code | 实体链接：封面公司名 ↔ 比赛库行情表名称列互为桥梁（库中无现成对照表，自建方案） |
 
 ## 4. 关键设计决策（问题驱动：每条先说解决什么问题）
@@ -129,4 +129,4 @@ pydantic §4 Schema 校验 → 逐行写 answers.jsonl（单题异常 → refusa
 - 无线框表格的行列还原依赖 lattice 检测，个别复杂合并单元格可能缺列
 - 路由为领域词表规则（无 LLM 兜底），极端措辞可能误路由（sql/hybrid 有兜底拒答）
 - embedding 单条截断 1800 字，超长文本尾部语义不进向量；该上限随 API 而异，换 embedding 服务须重核
-- 8 题全指标 1.0 是小样本（题目指定自测集）；100 题压测（s0~s99）Schema 100/100、引用逐字 105/105、误拒 0，与全量标注对照 answer_type 95~98/100（LLM 类型判定运行间波动；稳定差异仅 s75 SQL路恒text类型 / s92 口径错误，详见 SELFTEST.md §3）
+- 8 题全指标 1.0 是小样本（题目指定自测集）；100 题压测（s0-s99）Schema 100/100、引用逐字 105/105、误拒 0，与全量标注对照 answer_type 95-98/100（LLM 类型判定运行间波动；稳定差异仅 s75 SQL路恒text类型 / s92 口径错误，详见 SELFTEST.md §3）

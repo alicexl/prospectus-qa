@@ -18,7 +18,7 @@ python --version          # 应为 3.12.x
 # ③ 依赖（pymupdf / pdfplumber / sqlglot / pydantic / openai / jieba / numpy），约 1-5 分钟
 pip install -r requirements.txt
 
-# ④ 数据集（~2GB，Apache-2.0），约 10-60 分钟视网速：clone 到仓库根 data/（已 gitignore，不入库）
+# ④ 数据集（约 2GB，Apache-2.0），约 10-60 分钟视网速：clone 到仓库根 data/（已 gitignore，不入库）
 git clone --depth 1 https://www.modelscope.cn/datasets/BJQW14B/bs_challenge_financial_14b_dataset.git data
 ```
 
