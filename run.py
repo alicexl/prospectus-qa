@@ -89,7 +89,7 @@ _DOC_HINT = re.compile("|".join(_DOC_WORDS))
 _YEAR_RE = re.compile(r"20\d\d")
 
 
-def route(conn: sqlite3.Connection, question: str, doc_id: str | None) -> str:
+def route(question: str, doc_id: str | None) -> str:
     if doc_id is None:
         return "sql" if _SQL_HINT.search(question) else "none"
     if _SQL_HINT.search(question) and (_DOC_HINT.search(question) or _YEAR_RE.search(question)):
@@ -294,7 +294,7 @@ def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
     t0 = time.time()
     try:
         doc_id = link_company(conn, question)
-        r = route(conn, question, doc_id)
+        r = route(question, doc_id)
         if r == "none":
             rec = refuse(qid, "知识库中不存在该公司", "none")
         elif r == "sql":

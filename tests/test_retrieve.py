@@ -21,12 +21,11 @@ def test_link_company_longest_match():
 
 
 def test_route_rules():
-    c = _conn()
-    assert route(c, "列出招股书中披露的全部风险因素", "d1") == "doc"
-    assert route(c, "东微半导体本次募集资金投资项目合计多少？", "d1") == "doc"
-    assert route(c, "丽岛新材料本次IPO预计募集资金总额是多少？", None) == "none"
-    assert route(c, "某基金2020年持仓了哪些股票？", None) == "sql"
-    assert route(c, "国科微2016年营收多少？基金持仓多少？", "d2") == "hybrid"
+    assert route("列出招股书中披露的全部风险因素", "d1") == "doc"
+    assert route("东微半导体本次募集资金投资项目合计多少？", "d1") == "doc"
+    assert route("丽岛新材料本次IPO预计募集资金总额是多少？", None) == "none"
+    assert route("某基金2020年持仓了哪些股票？", None) == "sql"
+    assert route("国科微2016年营收多少？基金持仓多少？", "d2") == "hybrid"
 
 
 def test_rrf():
