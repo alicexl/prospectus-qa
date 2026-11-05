@@ -7,7 +7,7 @@
 
 ```bash
 python -X utf8 -m pytest tests/ -v                                          # 29 个测试（含真实数据集成）
-python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl      # 8 道官方自测题
+python -X utf8 run.py --input questions/questions.jsonl --output results/answers.jsonl      # 8 道官方自测题
 python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl           # 五组指标
 python -X utf8 run.py --input questions/sample100.jsonl --output results/sample100_answers.jsonl   # 100题压测
 ```

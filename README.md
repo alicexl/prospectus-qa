@@ -41,7 +41,7 @@ data/
 |---|---|---|
 | ① 入库 | `python -X utf8 ingest.py` | 约 20 分钟（实测 18m35s） |
 | ② embedding | `python -X utf8 ingest.py --embed-only` | 约 15 分钟（实测 14m59s） |
-| ③ 问答 8 题 | `python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl` | 约 20 秒 |
+| ③ 问答 8 题 | `python -X utf8 run.py --input questions/questions.jsonl --output results/answers.jsonl` | 约 20 秒 |
 | ④ 评估 | `python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl` | 数秒 |
 | （可选）测试 | `python -X utf8 -m pytest tests/ -v` | 约 1 分钟 |
 | （可选）100 题压测 | `python -X utf8 run.py --input questions/sample100.jsonl --output results/sample100_answers.jsonl` | 约 5-15 分钟 |
@@ -55,7 +55,8 @@ python -X utf8 ingest.py
 python -X utf8 ingest.py --embed-only
 
 # ③ 问答：逐行输出题目 §4 Schema 的 JSON（8 题黄金集；100 题压测命令见表）
-python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl
+#    题目 §4 要求形态：python run.py --input questions.jsonl --output answers.jsonl
+python -X utf8 run.py --input questions/questions.jsonl --output results/answers.jsonl
 
 # ④ 评估：五组指标 → results/metrics.json（数值/列表/引用/拒答全 1.0）
 python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl
@@ -95,7 +96,7 @@ schema.py     # 题目§4输出Schema（pydantic）
 llm.py        # DeepSeek/智谱 API 封装（key走环境变量/.env）
 labels.jsonl  # 8道自测题人工标注（核对PDF原页）
 labels_full.jsonl # 1000题标注终稿（1000/1000 verified，evaluate直接消费）
-questions/    # 自测输入：selftest.jsonl(8题) + sample100.jsonl(100题压测)
+questions/    # 自测输入：questions.jsonl(8题黄金集) + sample100.jsonl(100题压测)
 results/      # 交付物：answers.jsonl + metrics.json + sample100_answers.jsonl
 design.md     # 设计说明（面向评审）
 ```
