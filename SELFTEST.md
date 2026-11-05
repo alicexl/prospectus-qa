@@ -117,17 +117,19 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 | 指标 | 结果 |
 |---|---|
 | Schema 合规 | 100/100 |
-| 引用逐字重验 | 104/104 |
-| 答案类型分布 | text=82 / list=12 / number=6 / refusal=0 |
+| 引用逐字重验 | 105/105 |
+| 答案类型分布 | text=81 / list=14 / number=5 / refusal=0 |
 | 路由分布 | sql=60 / doc=40 / none=0（与标签 qtype 100% 一致） |
 | 拒答 | 0 条（标签 expect_refusal 亦为 0） |
-| 延迟 avg / P95 | 3546 / 4459 ms（中位数 2154） |
+| 延迟 avg / P95 | 5069 / 5676 ms（中位数 2565） |
 | 平均 in_tokens | 2157 |
 
-与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 98/100 一致，2 处差异：
+与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 95~98/100（doc 路类型判定由 LLM 输出，多次压测在 95-98 间波动；本次 95/100）。稳定差异 2 处：
 
 - s75 年化收益率：数值正确（86.57=人工裁决，无别名表达式列名污染显示已修）仅 SQL 路恒 text 类型与标签 number 不符
 - s92 第 6 大重仓股季度涨跌幅：口径错误（MAX-MIN 29.13 vs 人工裁决 -3.06），标注期已知
+
+波动差异（s45/s67/s97 类，text↔list/number 运行间翻动，答案内容与标签一致）。
 
 ### 已知限制（如实披露）
 
