@@ -50,8 +50,8 @@ answers.jsonl + labels.jsonl ──evaluate.py──> 五组指标（引用独�
 | 列表题条目级 P / R / F1 | 1.0 / 1.0 / 1.0 |
 | 引用正确率（evaluate 独立重验，非 run 自报） | 1.0 |
 | 拒答 Precision / Recall | 1.0 / 1.0 |
-| 延迟 avg / P95 | 1495 ms / 2768 ms |
-| 单题平均 tokens（in/out） | 1899 / 154 |
+| 延迟 avg / P95 | 1981 ms / 3996 ms |
+| 单题平均 tokens（in/out） | 1899 / 159 |
 
 复现：`python -X utf8 run.py --input questions/selftest.jsonl --output results/answers.jsonl && python -X utf8 evaluate.py --answers results/answers.jsonl --labels labels.jsonl`
 
@@ -63,4 +63,4 @@ answers.jsonl + labels.jsonl ──evaluate.py──> 五组指标（引用独�
 
 - 无线框表格的行列还原依赖 lattice 检测，个别复杂合并单元格可能缺列
 - 路由为关键词规则（无 LLM 兜底），极端措辞可能误路由（sql/hybrid 有兜底拒答）
-- 8 题全指标 1.0 是小样本（题目指定自测集）；100 题压测（s0~s99）Schema 100/100、引用逐字 106/106、误拒 0，与全量标注对照 answer_type 97/100 一致（3 处差异：s45 多值标签局限 / s75 SQL路恒text类型（列名污染已修）/ s92 口径错误，详见 SELFTEST.md §3）
+- 8 题全指标 1.0 是小样本（题目指定自测集）；100 题压测（s0~s99）Schema 100/100、引用逐字 106/106、误拒 0，与全量标注对照 answer_type 96/100 一致（4 处差异：s67/s97 类型口径波动 / s75 SQL路恒text类型（列名污染已修）/ s92 口径错误，详见 SELFTEST.md §3）

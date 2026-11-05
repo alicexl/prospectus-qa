@@ -100,8 +100,8 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 | 列表条目 P/R/F1 | 1.0 / 1.0 / 1.0 |
 | 引用正确率（独立重验） | 1.0 |
 | 拒答 P/R | 1.0 / 1.0 |
-| 延迟 avg / P95 | 1495 / 2768 ms |
-| 单题 tokens in/out | 1899 / 154 |
+| 延迟 avg / P95 | 1981 / 3996 ms |
+| 单题 tokens in/out | 1899 / 159 |
 
 ## 3. 100 题压测（question.json 前 100 题，s0~s99）
 
@@ -118,15 +118,15 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 |---|---|
 | Schema 合规 | 100/100 |
 | 引用逐字重验 | 106/106 |
-| 答案类型分布 | text=83 / list=12 / number=5 / refusal=0 |
+| 答案类型分布 | text=80 / list=14 / number=6 / refusal=0 |
 | 路由分布 | sql=60 / doc=40 / none=0（与标签 qtype 100% 一致） |
 | 拒答 | 0 条（标签 expect_refusal 亦为 0） |
-| 延迟 avg / P95 | 5441 / 4937 ms（中位数 2223；s19 大表 JOIN 慢查询 180s 拉高均值） |
+| 延迟 avg / P95 | 6272 / 25459 ms（中位数 2589；SQL 大表 JOIN 慢题拉高尾部） |
 | 平均 in_tokens | 2112 |
 
-与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 97/100 一致，3 处差异：
+与全量标注对照（labels_full.jsonl，全部 auto/cross 验证）：answer_type 96/100 一致，4 处差异：
 
-- s45 三年销售费用：标签 number 但 value.number=None（多值题标签局限），答案内容与标签一致
+- s67/s97：text↔list 类型口径波动（doc 路 answer_type 由 LLM 输出，两次运行间波动，答案内容与标签一致）
 - s75 年化收益率：数值正确（86.57=人工裁决，无别名表达式列名污染显示已修）仅 SQL 路恒 text 类型与标签 number 不符
 - s92 第 6 大重仓股季度涨跌幅：口径错误（MAX-MIN 29.13 vs 人工裁决 -3.06），标注期已知
 
@@ -139,6 +139,7 @@ python -X utf8 run.py --input questions/sample100.jsonl --output results/sample1
 5. **flash 关思考**（openai 端点 extra_body）+ LLM 吐带逗号字符串数字强转（`_num`）
 6. **检索未命中型误拒**（s922 海外项目金额 / s350 主营业务 / s770 推广阶段产品）：分词 token 低于 FTS5 trigram 3 字下限（海外/项目/金额全是 2 字词，query 退化成「人民币」）+ 年份 token 把财务表格片顶上来 → 最终方案＝**吸收 ragbot 的 scope-then-score**：doc 圈定后内存手写 Okapi BM25（jieba 词级、doc 内 IDF、token 进程缓存 2.2s→0.33s），弃全库 FTS 扫描（trigram OR 全库打分慢一个数量级）；k 8→10
 7. **openai SDK 默认超时 600s + 静默重试**：连接悬挂吊死整题 10 分钟 → 显式 timeout=60s + max_retries=0，自管重试兜底（单题最坏 3 分钟后优雅拒答）
+8. **完整公司名误走简称救济**（README 全流程复现揪出）：题面含「股份有限公司」形态时 n-gram 子片段把「湖南长远锂业」误链到库内「湖南长远锂科」（q8 黄金集从正确拒答变误答）→ 修复=完整名形态只信①级全称精确匹配，不中即库外；简称救济（②③④级）仅用于题面为简称时
 
 ### 已知限制（如实披露）
 

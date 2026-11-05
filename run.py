@@ -69,6 +69,10 @@ def link_company(conn: sqlite3.Connection, question: str) -> str | None:
             best_len, best_doc = hit_len, doc_id
     if best_doc:
         return best_doc
+    # 题面含完整公司名形态（股份/有限责任）→ 只信①级全称精确匹配，不中即库外。
+    # ②③④级是为简称设计的救济，会把「湖南长远锂业」n-gram 误链到「湖南长远锂科」（q8 复现教训）
+    if ("股份" in question and "有限" in question) or "有限责任" in question:
+        return None
     words = [w for w in jieba.lcut(question) if len(w) >= 2]
     grams = []
     for n in (3, 2):  # 连续 3 词/2 词拼接（≥4 字）
