@@ -89,14 +89,12 @@ ingest.py     # 入库管线：PyMuPDF文本 + pdfplumber表格(跨页合并) + 
 run.py        # 问答管线：实体链接→路由→doc/sql/hybrid→quote程序化逐字校验→Schema输出
 evaluate.py   # 评估：数值准确率/列表PRF1/引用独立重验/拒答PR/延迟成本
 label.py      # 标注流水线：题型判定→确定性优先→证据分级→人工复核队列（1000题定标）
-label_triage.py # 复核队列消化：JOIN二次SQL交叉验证 / 多问句数字锚点重算
 schema.py     # 题目§4输出Schema（pydantic）
 llm.py        # DeepSeek/智谱 API 封装（key走环境变量/.env）
 labels.jsonl  # 8道自测题人工标注（核对PDF原页）
 labels_full.jsonl # 1000题标注终稿（1000/1000 verified，evaluate直接消费）
 questions/    # 自测输入：selftest.jsonl(8题) + sample100.jsonl(100题压测)
 results/      # 交付物：answers.jsonl + metrics.json + sample100_answers.jsonl
-spec.md       # 需求与设计基线
 design.md     # 设计说明（面向评审）
 ```
 
@@ -105,3 +103,5 @@ design.md     # 设计说明（面向评审）
 - 无线框/复杂合并单元格表格的行列还原依赖 pdfplumber lattice 检测，个别表格可能缺列
 - 路由为规则优先（关键词），极端措辞可能误路由（sql/hybrid 路会兜底拒答或按文档路处理）
 - SQL 路覆盖比赛库 10 张表的只读查询；写操作在 AST 层与只读连接双重拒绝
+- SQL 路答案 `answer_type` 恒为 `text`：数值型 SQL 题不会输出 `number`+`value`，可溯源凭据为 `sql` 字段而非文档引用
+- 题面含完整公司名时只做全称精确匹配（防「湖南长远锂业」误链「湖南长远锂科」类近似名），变体全称会被保守拒答
