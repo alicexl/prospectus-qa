@@ -100,8 +100,8 @@ print(sum(1 for l in open('results/answers.jsonl', encoding='utf-8') if schema.A
 | 列表条目 P/R/F1 | 1.0 / 1.0 / 1.0 |
 | 引用正确率（独立重验） | 1.0 |
 | 拒答 P/R | 1.0 / 1.0 |
-| 延迟 avg / P95 | 1697 / 2940 ms |
-| 单题 tokens in/out | 1899 / 157 |
+| 延迟 avg / P95 | 1819 / 3436 ms |
+| 单题 tokens in/out | 1899 / 159 |
 
 ## 3. 100 题压测（question.json 前 100 题，s0~s99）
 

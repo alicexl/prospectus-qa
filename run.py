@@ -289,31 +289,26 @@ def answer_one(conn, qid: str, question: str) -> schema.AnswerRecord:
     t0 = time.time()
     try:
         doc_id = link_company(conn, question)
-        if doc_id is None:
-            # 实体链接失败≠拒答：纯DB题（基金/行情/行业）无文档实体也要走sql路
-            if _SQL_HINT.search(question):
-                rec = answer_sql(conn, qid, question, None)
-            else:
-                rec = refuse(qid, "知识库中不存在该公司", "none")
+        r = route(conn, question, doc_id)
+        if r == "none":
+            rec = refuse(qid, "知识库中不存在该公司", "none")
+        elif r == "sql":
+            # 纯 DB 题：实体链接失败但 DB 领域词命中（无文档实体）
+            rec = answer_sql(conn, qid, question, doc_id)
         else:
             # 长列表题（列出/有哪些X）：题面点名节标题 或 风险/募集字样 → 章节全量召回
-            if _LIST_HINT.search(question):
+            if r == "doc" and _LIST_HINT.search(question):
                 kw = _section_kw(conn, question, doc_id)
                 if kw or "风险" in question or "募集" in question:
                     rec = answer_listq(conn, qid, question, doc_id, kw)
                     rec.latency_ms = int((time.time() - t0) * 1000)
                     return rec
-            r = route(conn, question, doc_id)
-            if r == "sql":
-                rec = answer_sql(conn, qid, question, doc_id)
-            elif r == "hybrid":
+            if r == "hybrid":
                 rec = answer_hybrid(conn, qid, question, doc_id)
-                numeric_postprocess(question, rec,
-                                    quote_texts=" ".join(c.quote for c in rec.citations))
             else:
                 rec = answer_doc(conn, qid, question, doc_id)
-                numeric_postprocess(question, rec,
-                                    quote_texts=" ".join(c.quote for c in rec.citations))
+            numeric_postprocess(question, rec,
+                                quote_texts=" ".join(c.quote for c in rec.citations))
     except Exception as e:  # noqa: BLE001 单题失败不中断整批
         rec = refuse(qid, f"处理失败：{e}")
     rec.latency_ms = int((time.time() - t0) * 1000)

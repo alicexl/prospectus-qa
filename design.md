@@ -75,23 +75,22 @@ _write_doc 落库（单事务，doc 级幂等断点续跑）
 question
   ▼
 ① 实体链接（精确匹配：全称 / 核心名 / 手动别名 ⊆ 题面，最长匹配）
-  ├─ 命中 doc_id ─────────────────────────┐
-  └─ 未命中 ── SQL 关键词？─ 有 → sql 路   │
-              └─ 无 → 拒答（知识库外）    │
-  ▼                                      │
-② 规则路由（DB/文档领域词表，无 LLM 兜底）   │
+  ├─ 未命中：DB 领域词表命中 → sql 路（schema 卡片 → 生成 SQL → sqlglot 守卫
+  │          → 只读执行 → 报错/空结果自纠错 → 列名清洗）——终态
+  │          否则 → 拒答（知识库外）——终态
+  └─ 命中 doc_id ↓
+② 长列表题（题面点名节标题 / 风险·募集字样）→ 长列表路：行首锚定定位章节
+    → 整章全量召回（非 top-k）→ items + 条目数校验——终态
+  │ 否 ↓
+③ 规则路由（DB/文档领域词表，doc_id 已锁定时只判 doc/hybrid）
   ├─ doc 路   剥公司名 query → doc 内 BM25(jieba) + 向量余弦 RRF top10
   │           （文本 chunk 入选 → 同页表格 chunk 联动带上）
   │           → DeepSeek 抽取答案 + quote → 页文本 ∪ 表格块逐字校验
   │           （校验不过的引用丢弃；非拒答但引用全灭 → 降级拒答）
   │           → 数值题：计算意图(convert/growth/ratio/sum) Python 确定性重算
-  ├─ sql 路   schema 卡片（字段 + 样例行）→ DeepSeek 生成 SQL
-  │           → sqlglot 白名单 + 强制 LIMIT 200 → mode=ro 只读执行
-  │           → 报错/空结果喂回自纠错（≤2 轮）→ 列名 >20 字清洗展示
-  ├─ hybrid   doc 路为主 + sql 路结果拼接
-  └─ 长列表路 题面点名节标题 → 行首锚定定位 → 整章全量召回（非 top-k）→ items + 条目数程序校验
+  └─ hybrid   doc 路为主 + sql 路结果拼接
   ▼
-③ 拒答三层：实体链接失败 / 检索置信不足 / LLM 判定未披露
+④ 拒答三层：实体链接失败（无 DB 词）/ 检索置信不足 / LLM 判定未披露
   ▼
 pydantic §4 Schema 校验 → 逐行写 answers.jsonl（单题异常 → refusal，不中断整批）
 ```
