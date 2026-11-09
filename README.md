@@ -7,6 +7,9 @@
 > 以下命令均在**仓库根目录**执行（`git clone` 会把数据集放进仓库根 `data/`）。
 
 ```bash
+# ⓪ 获取本项目（若尚未 clone），秒级
+git clone https://github.com/alicexl/prospectus-qa.git && cd prospectus-qa
+
 # ① Python 3.12（Anaconda base 即可），1 分钟
 python --version          # 应为 3.12.x
 
